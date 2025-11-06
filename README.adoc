@@ -1,0 +1,69 @@
+= printree – 超軽量ディレクトリツリー & Git差分ビューア
+:toc: left
+:toclevels: 2
+:icons: font
+
+== 概要
+`printree` は「速い・軽い・拡張しやすい」を目標にしたツリー表示ツールです。
+- 標準は **非再帰・手動スタックDFS** で「その場出力」= 省メモリ
+- include/exclude の glob フィルタ、type 絞り込み
+- `.gitignore` 反映の有無を切替可能
+- カラー出力 (auto/always/never)
+- 権限エラーは項目の直後に表示して処理継続
+- 2つの Git リビジョンの**差分ツリー**出力（追加/削除/変更）
+
+== インストール
+[source,bash]
+----
+cargo build --release
+target/release/printree --help
+----
+
+== 使い方
+
+=== 通常のツリー出力
+[source,bash]
+----
+printree [PATH] [--max-depth N] [--hidden] [--follow-symlinks]
+          [--sort=name|none] [--dirs-first]
+          [--include GLOB ...] [--exclude GLOB ...]
+          [--match-mode name|path] [--type file|dir|symlink]...
+          [--gitignore on|off] [--color auto|always|never]
+----
+
+主なオプション:
+- `--include/--exclude`: glob で絞り込み（複数指定可）。`--match-mode` で `name`(既定) か `path` を選択。
+- `--type`: `file|dir|symlink` を複数指定で合成。
+- `--gitignore on|off`: `.gitignore` を反映するか。`on` の場合、`.gitignore` ルールで除外された項目は非表示。
+- `--color`: 自動検出/常にカラー/カラーなし。
+- 権限エラーは `… ── [permission denied]` のように表示しつつ継続。
+
+NOTE: `.gitignore` 反映時は内部的に `ignore` クレートを利用します。出力は深さインデント主体（`├──/└──` の「最後要素検知」は OS 列挙に比べて厳密でない場合があります）。厳密な罫線ツリーを優先する場合は `--gitignore off` を使ってください。
+
+=== Git差分
+[source,bash]
+----
+printree diff --rev-a <HASH|REF> --rev-b <HASH|REF> [--path SUBDIR]
+               [--include GLOB ...] [--exclude GLOB ...]
+               [--match-mode name|path] [--type file|dir|symlink]...
+               [--color auto|always|never]
+----
+
+- `--rev-a`, `--rev-b`: 比較する2リビジョン（コミットハッシュや `HEAD~1` 等）
+- `--path`: リポジトリ直下からの相対サブディレクトリに限定
+- 出力色: `+`=追加(緑), `-`=削除(赤), `~`=内容変更(黄)
+
+== 速度とメモリ
+- 常に**逐次出力**（全体の保持なし）
+- メタデータ呼び出しは最小化（`file_type()` 優先）
+- `.gitignore on` 時もストリーム処理で**低メモリ**
+
+== 発展アイデア
+- 並列探索（`threads` オプション）
+- JSON/NDJSON/DOT など機械可読出力
+- サイズや時刻によるフィルタ（`--size '>=1MiB'` など）
+- シンボリックリンクの循環検知（(dev,inode) トラッキング）
+
+== 既知の注意
+- Windows 隠し属性の検出は既定無効（速度優先）。必要なら将来拡張で対応。
+- `.gitignore` の厳密なツリー罫線は制約上完全一致しない場合があります（インデントは保証）。
