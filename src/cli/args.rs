@@ -51,7 +51,7 @@ pub struct Cli {
     pub gitignore: GitignoreMode,
 
     /// Color output
-    #[arg(long, value_enum, default_value_t = ColorMode::Auto)]
+    #[arg(long, value_enum, default_value_t = ColorMode::Never)]
     pub color: ColorMode,
 }
 
