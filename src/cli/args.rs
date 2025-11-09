@@ -53,6 +53,10 @@ pub struct Cli {
     /// Color output
     #[arg(long, value_enum, default_value_t = ColorMode::Never)]
     pub color: ColorMode,
+
+    /// Output format
+    #[arg(long, value_enum, default_value_t = Format::Plain)]
+    pub format: Format,
 }
 
 #[derive(Subcommand, Debug)]
@@ -65,6 +69,10 @@ pub enum Cmd {
         rev_b: String,
         #[arg(long)]
         path: Option<PathBuf>,
+
+        /// Output format (plain/json)
+        #[arg(long, value_enum, default_value_t = Format::Plain)]
+        format: Format,
     },
 }
 
@@ -82,3 +90,6 @@ pub enum GitignoreMode { On, Off }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 pub enum ColorMode { Auto, Always, Never }
+
+#[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
+pub enum Format { Plain, Json }
