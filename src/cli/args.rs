@@ -1,7 +1,17 @@
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
+
+#[derive(ValueEnum, Clone, Debug)]
+pub enum EncodingMode {
+    Utf8,
+    Sjis,
+    Auto,
+}
+
 #[derive(Parser, Debug)]
+#[command(name = "printree")]
+#[command(about = "Print directory tree recursively", long_about = None)]
 #[command(version, about = "Fast, memory-light directory tree & git diff printer")]
 pub struct Cli {
     #[command(subcommand)]
@@ -57,6 +67,10 @@ pub struct Cli {
     /// Output format
     #[arg(long, value_enum, default_value_t = Format::Plain)]
     pub format: Format,
+
+    /// Output text encoding
+    #[arg(long, value_enum, default_value = "utf8", help = "Output text encoding (utf8|sjis|auto)")]
+    pub encoding: EncodingMode,
 }
 
 #[derive(Subcommand, Debug)]
