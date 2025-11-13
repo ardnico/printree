@@ -113,7 +113,7 @@ fn run_tree_plain(
     visited.insert(root_real.clone());
 
     let mut stack: Vec<Frame> = Vec::new();
-    if let Some(frame) = read_dir_frame(root, root, "", 1, cli, include_glob, exclude_glob)? {
+    if let Some(frame) = read_dir_frame(root, "", 1, cli, include_glob, exclude_glob)? {
         stack.push(frame);
     }
 
@@ -211,7 +211,6 @@ fn run_tree_plain(
                 }
             }
             if let Some(frame) = read_dir_frame(
-                root,
                 &entry.path(),
                 &child_prefix,
                 top.depth + 1,
@@ -280,7 +279,7 @@ fn run_tree_json(
     }
 
     let mut stack: Vec<Frame> = Vec::new();
-    if let Some(frame) = read_dir_frame(root, root, "", 1, cli, include_glob, exclude_glob)? {
+    if let Some(frame) = read_dir_frame(root, "", 1, cli, include_glob, exclude_glob)? {
         stack.push(frame);
     }
 
@@ -356,15 +355,9 @@ fn run_tree_json(
                             continue;
                         }
                     }
-                    if let Some(frame) = read_dir_frame(
-                        root,
-                        &path,
-                        "",
-                        top.depth + 1,
-                        cli,
-                        include_glob,
-                        exclude_glob,
-                    )? {
+                    if let Some(frame) =
+                        read_dir_frame(&path, "", top.depth + 1, cli, include_glob, exclude_glob)?
+                    {
                         stack.push(frame);
                     }
                 }
@@ -396,18 +389,17 @@ fn run_tree_json(
 // ヘルパー関数
 // ---------------------------------------------------------------------
 fn read_dir_frame(
-    root: &Path,
-    dir: &Path,
+    path: &Path,
     prefix: &str,
     depth: usize,
     cli: &Cli,
     include_glob: &Option<globset::GlobSet>,
     exclude_glob: &Option<globset::GlobSet>,
 ) -> Result<Option<Frame>> {
-    let rd = match fs::read_dir(dir) {
+    let rd = match fs::read_dir(path) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("{} [permission denied: {}]", dir.display(), e);
+            eprintln!("{} [permission denied: {}]", path.display(), e);
             return Ok(None);
         }
     };
@@ -426,13 +418,13 @@ fn read_dir_frame(
                     }
                 }
                 let fullp = de.path();
-                if !match_globs(root, &fullp, include_glob, exclude_glob, cli.match_mode) {
+                if !match_globs(path, &fullp, include_glob, exclude_glob, cli.match_mode) {
                     continue;
                 }
                 entries.push(de);
             }
             Err(err) => {
-                eprintln!("[read_dir error] {}: {err}", dir.display());
+                eprintln!("[read_dir error] {}: {err}", path.display());
             }
         }
     }
@@ -453,7 +445,7 @@ fn read_dir_frame(
     }
 
     Ok(Some(Frame {
-        path: dir.to_path_buf(),
+        path: path.to_path_buf(),
         entries,
         idx: 0,
         prefix: prefix.to_string(),
