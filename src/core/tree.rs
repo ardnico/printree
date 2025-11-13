@@ -1,8 +1,8 @@
+use encoding_rs::{Encoding, SHIFT_JIS, UTF_16LE};
 use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
-use encoding_rs::{UTF_8, UTF_16LE, SHIFT_JIS, Encoder};
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use serde::Serialize;
@@ -24,57 +24,73 @@ pub fn run_tree(cli: &Cli) -> Result<()> {
     }
 }
 
-
 // ---------------------------------------------------------------------
 // Encoding
 // ---------------------------------------------------------------------
-fn make_encoded_writer<'a>(
-    encoding: &crate::cli::EncodingMode,
-) -> Box<dyn Write + 'a> {
-    let stdout = io::stdout();
-    let handle = stdout.lock();
-    let writer: Box<dyn Write> = match encoding {
-        crate::cli::EncodingMode::Utf8 => Box::new(handle),
+fn make_encoded_writer(cli: &Cli) -> Box<dyn WriteColor> {
+    match cli.encoding {
+        crate::cli::EncodingMode::Utf8 => Box::new(StandardStream::stdout(color_choice(cli.color))),
         crate::cli::EncodingMode::Utf8bom => {
-            let mut h = handle;
-            h.write_all(&[0xEF, 0xBB, 0xBF]).ok();
-            Box::new(h)
+            let mut stream = StandardStream::stdout(color_choice(cli.color));
+            stream.write_all(&[0xEF, 0xBB, 0xBF]).ok();
+            Box::new(stream)
         }
         crate::cli::EncodingMode::Utf16le => {
-            let mut h = handle;
-            h.write_all(&[0xFF, 0xFE]).ok(); // UTF-16 LE BOM
-            Box::new(EncodingWriter::new(h, UTF_16LE.new_encoder()))
+            let mut stream = StandardStream::stdout(color_choice(cli.color));
+            stream.write_all(&[0xFF, 0xFE]).ok();
+            Box::new(EncodingWriter::new(stream, UTF_16LE))
         }
-        crate::cli::EncodingMode::Sjis => {
-            Box::new(EncodingWriter::new(handle, SHIFT_JIS.new_encoder()))
-        }
-        crate::cli::EncodingMode::Auto => Box::new(handle),
-    };
-    writer
-}
-
-/// 出力時の再エンコードを行う構造体
-struct EncodingWriter<W: Write> {
-    inner: W,
-    encoder: Encoder,
-}
-
-impl<W: Write> EncodingWriter<W> {
-    fn new(inner: W, encoder: Encoder) -> Self {
-        Self { inner, encoder }
+        crate::cli::EncodingMode::Sjis => Box::new(EncodingWriter::new(
+            StandardStream::stdout(color_choice(cli.color)),
+            SHIFT_JIS,
+        )),
+        crate::cli::EncodingMode::Auto => Box::new(StandardStream::stdout(color_choice(cli.color))),
     }
 }
 
-impl<W: Write> Write for EncodingWriter<W> {
+/// 出力時の再エンコードを行う構造体
+struct EncodingWriter<W: WriteColor> {
+    inner: W,
+    encoding: &'static Encoding,
+}
+
+impl<W: WriteColor> EncodingWriter<W> {
+    fn new(inner: W, encoding: &'static Encoding) -> Self {
+        Self { inner, encoding }
+    }
+}
+
+impl<W: WriteColor> Write for EncodingWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let s = std::str::from_utf8(buf).unwrap_or("");
-        let (encoded, _, _) = self.encoder.encode_from_utf8(s, &mut Vec::new(), false);
-        self.inner.write_all(&encoded)?;
+        let s = std::str::from_utf8(buf)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+        let (cow, _, had_errors) = self.encoding.encode(s);
+        if had_errors {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "failed to encode output",
+            ));
+        }
+        self.inner.write_all(&cow)?;
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
         self.inner.flush()
+    }
+}
+
+impl<W: WriteColor> WriteColor for EncodingWriter<W> {
+    fn supports_color(&self) -> bool {
+        self.inner.supports_color()
+    }
+
+    fn set_color(&mut self, spec: &ColorSpec) -> io::Result<()> {
+        self.inner.set_color(spec)
+    }
+
+    fn reset(&mut self) -> io::Result<()> {
+        self.inner.reset()
     }
 }
 
@@ -87,7 +103,7 @@ fn run_tree_plain(
     include_glob: &Option<globset::GlobSet>,
     exclude_glob: &Option<globset::GlobSet>,
 ) -> Result<()> {
-    let mut out = make_encoded_writer(&cli.encoding);
+    let mut out = make_encoded_writer(cli);
     out.set_color(ColorSpec::new().set_bold(true))?;
     writeln!(&mut out, "{}", root.display())?;
     out.reset()?;
@@ -120,7 +136,10 @@ fn run_tree_plain(
                 writeln!(
                     &mut out,
                     "{}{}{}  [permission denied: {}]",
-                    top.prefix, connector, name.to_string_lossy(), e
+                    top.prefix,
+                    connector,
+                    name.to_string_lossy(),
+                    e
                 )?;
                 continue;
             }
@@ -191,9 +210,14 @@ fn run_tree_plain(
                     continue;
                 }
             }
-            if let Some(frame) =
-                read_dir_frame(&entry.path(), &child_prefix, top.depth + 1, cli, include_glob, exclude_glob)?
-            {
+            if let Some(frame) = read_dir_frame(
+                &entry.path(),
+                &child_prefix,
+                top.depth + 1,
+                cli,
+                include_glob,
+                exclude_glob,
+            )? {
                 stack.push(frame);
             }
         }
