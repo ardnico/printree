@@ -72,3 +72,19 @@ pub fn color_choice(mode: ColorMode) -> ColorChoice {
         ColorMode::Never => ColorChoice::Never,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn match_mode_path_uses_root_prefix_for_globs() {
+        let include = build_globset(&vec!["src/utils/**".to_string()]).expect("building include glob");
+        let root = Path::new("/project");
+        let included_path = root.join("src/utils/filter.rs");
+        let excluded_path = root.join("src/bin/main.rs");
+
+        assert!(match_globs(root, &included_path, &include, &None::<GlobSet>, MatchMode::Path));
+        assert!(!match_globs(root, &excluded_path, &include, &None::<GlobSet>, MatchMode::Path));
+    }
+}
