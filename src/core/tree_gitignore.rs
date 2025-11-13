@@ -156,6 +156,7 @@ mod tests {
             gitignore: crate::cli::GitignoreMode::On,
             color: crate::cli::ColorMode::Never,
             format: crate::cli::Format::Json,
+            encoding: crate::cli::EncodingMode::Utf8,
         };
 
         run_tree_gitignore(&cli).unwrap();
