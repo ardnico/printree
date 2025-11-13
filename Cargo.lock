@@ -540,6 +540,7 @@ dependencies = [
  "git2",
  "globset",
  "ignore",
+ "regex-automata",
  "serde",
  "serde_json",
  "tempfile",

@@ -6,7 +6,7 @@ use std::path::Path;
 use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
 
 use crate::cli::{Cli, Format};
-use crate::utils::{allow_type, build_globset, color_choice, match_globs};
+use crate::utils::{allow_type, build_patterns, color_choice, match_globs, PatternList};
 
 #[derive(Serialize)]
 struct JsonEntry<'a> {
@@ -35,38 +35,74 @@ fn run_tree_gitignore_plain(cli: &Cli) -> Result<()> {
     writeln!(&mut out, "{}", root_path.display())?;
     out.reset()?;
 
-    let include_glob = build_globset(&cli.includes)?;
-    let exclude_glob = build_globset(&cli.excludes)?;
+    let include_glob = build_patterns(&cli.includes, cli.pattern_syntax, true)?;
+    let exclude_glob = build_patterns(&cli.excludes, cli.pattern_syntax, false)?;
 
     let mut ov = OverrideBuilder::new(&root);
-    for exc in &cli.excludes { ov.add(exc).ok(); }
-    for inc in &cli.includes { ov.add(&format!("!{}", inc)).ok(); }
+    for exc in &cli.excludes {
+        ov.add(exc).ok();
+    }
+    for inc in &cli.includes {
+        ov.add(&format!("!{}", inc)).ok();
+    }
     let overrides = ov.build().ok();
 
     let mut wb = WalkBuilder::new(&root);
-    wb.hidden(!cli.hidden).git_ignore(true).git_global(true).git_exclude(true)
-      .follow_links(cli.follow_symlinks).max_depth(cli.max_depth).standard_filters(false);
-    if let Some(o) = overrides { wb.overrides(o); }
+    wb.hidden(!cli.hidden)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .follow_links(cli.follow_symlinks)
+        .max_depth(cli.max_depth)
+        .standard_filters(false);
+    if let Some(o) = overrides {
+        wb.overrides(o);
+    }
 
     for dent in wb.build() {
         match dent {
             Ok(d) => {
                 let path = d.path();
-                if path == root_path { continue; }
+                if path == root_path {
+                    continue;
+                }
                 let depth = d.depth();
 
-                if let Some(ft) = d.file_type() { if !allow_type(&ft, &cli.types) { continue; } }
-                if !match_globs(root_path, path, &include_glob, &exclude_glob, cli.match_mode) { continue; }
-
-                for _ in 0..depth { write!(&mut out, "    ")?; }
                 if let Some(ft) = d.file_type() {
-                    if ft.is_dir() { out.set_color(ColorSpec::new().set_fg(Some(Color::Blue)))?; }
-                    else if ft.is_symlink() { out.set_color(ColorSpec::new().set_fg(Some(Color::Cyan)))?; }
+                    if !allow_type(&ft, &cli.types) {
+                        continue;
+                    }
                 }
-                writeln!(&mut out, "{}", path.file_name().unwrap_or_default().to_string_lossy())?;
+                if !match_globs(
+                    root_path,
+                    path,
+                    &include_glob,
+                    &exclude_glob,
+                    cli.match_mode,
+                ) {
+                    continue;
+                }
+
+                for _ in 0..depth {
+                    write!(&mut out, "    ")?;
+                }
+                if let Some(ft) = d.file_type() {
+                    if ft.is_dir() {
+                        out.set_color(ColorSpec::new().set_fg(Some(Color::Blue)))?;
+                    } else if ft.is_symlink() {
+                        out.set_color(ColorSpec::new().set_fg(Some(Color::Cyan)))?;
+                    }
+                }
+                writeln!(
+                    &mut out,
+                    "{}",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                )?;
                 out.reset()?;
             }
-            Err(e) => { writeln!(&mut out, "[error] {e}")?; }
+            Err(e) => {
+                writeln!(&mut out, "[error] {e}")?;
+            }
         }
     }
 
@@ -76,34 +112,68 @@ fn run_tree_gitignore_plain(cli: &Cli) -> Result<()> {
 fn run_tree_gitignore_json(cli: &Cli) -> Result<()> {
     let root = cli.path.clone().unwrap_or_else(|| ".".into());
     let root_path = Path::new(&root);
-    let include_glob = build_globset(&cli.includes)?;
-    let exclude_glob = build_globset(&cli.excludes)?;
+    let include_glob = build_patterns(&cli.includes, cli.pattern_syntax, true)?;
+    let exclude_glob = build_patterns(&cli.excludes, cli.pattern_syntax, false)?;
     let mut stdout = std::io::BufWriter::new(std::io::stdout().lock());
 
     // ルート
     let root_s = root_path.display().to_string();
-    serde_json::to_writer(&mut stdout, &JsonEntry { path: &root_s, name: ".", depth: 0, kind: "dir", error: None })?;
+    serde_json::to_writer(
+        &mut stdout,
+        &JsonEntry {
+            path: &root_s,
+            name: ".",
+            depth: 0,
+            kind: "dir",
+            error: None,
+        },
+    )?;
     writeln!(&mut stdout)?;
 
     let mut ov = OverrideBuilder::new(&root);
-    for exc in &cli.excludes { ov.add(exc).ok(); }
-    for inc in &cli.includes { ov.add(&format!("!{}", inc)).ok(); }
+    for exc in &cli.excludes {
+        ov.add(exc).ok();
+    }
+    for inc in &cli.includes {
+        ov.add(&format!("!{}", inc)).ok();
+    }
     let overrides = ov.build().ok();
 
     let mut wb = WalkBuilder::new(&root);
-    wb.hidden(!cli.hidden).git_ignore(true).git_global(true).git_exclude(true)
-      .follow_links(cli.follow_symlinks).max_depth(cli.max_depth).standard_filters(false);
-    if let Some(o) = overrides { wb.overrides(o); }
+    wb.hidden(!cli.hidden)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .follow_links(cli.follow_symlinks)
+        .max_depth(cli.max_depth)
+        .standard_filters(false);
+    if let Some(o) = overrides {
+        wb.overrides(o);
+    }
 
     for dent in wb.build() {
         match dent {
             Ok(d) => {
                 let path = d.path();
-                if path == root_path { continue; }
+                if path == root_path {
+                    continue;
+                }
                 let depth = d.depth();
 
-                if let Some(ft) = d.file_type() { if !allow_type(&ft, &cli.types) { continue; } }
-                if !match_globs(root_path, path, &include_glob, &exclude_glob, cli.match_mode) { continue; }
+                if let Some(ft) = d.file_type() {
+                    if !allow_type(&ft, &cli.types) {
+                        continue;
+                    }
+                }
+                if !match_globs(
+                    root_path,
+                    path,
+                    &include_glob,
+                    &exclude_glob,
+                    cli.match_mode,
+                ) {
+                    continue;
+                }
 
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
                 let path_s = path.display().to_string();
@@ -113,12 +183,30 @@ fn run_tree_gitignore_json(cli: &Cli) -> Result<()> {
                     Some(_) => "file",
                     None => "unknown",
                 };
-                serde_json::to_writer(&mut stdout, &JsonEntry { path: &path_s, name: &name, depth, kind, error: None })?;
+                serde_json::to_writer(
+                    &mut stdout,
+                    &JsonEntry {
+                        path: &path_s,
+                        name: &name,
+                        depth,
+                        kind,
+                        error: None,
+                    },
+                )?;
                 writeln!(&mut stdout)?;
             }
             Err(e) => {
                 let msg = e.to_string();
-                serde_json::to_writer(&mut stdout, &JsonEntry { path: "", name: "", depth: 0, kind: "unknown", error: Some(&msg) })?;
+                serde_json::to_writer(
+                    &mut stdout,
+                    &JsonEntry {
+                        path: "",
+                        name: "",
+                        depth: 0,
+                        kind: "unknown",
+                        error: Some(&msg),
+                    },
+                )?;
                 writeln!(&mut stdout)?;
             }
         }
@@ -131,8 +219,8 @@ fn run_tree_gitignore_json(cli: &Cli) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
     use std::fs::{create_dir_all, File};
+    use tempfile::tempdir;
 
     #[test]
     fn gitignore_json_runs() {
@@ -151,6 +239,7 @@ mod tests {
             dirs_first: true,
             includes: vec![],
             excludes: vec![],
+            pattern_syntax: crate::cli::PatternSyntax::Glob,
             match_mode: crate::cli::MatchMode::Path,
             types: vec![],
             gitignore: crate::cli::GitignoreMode::On,
