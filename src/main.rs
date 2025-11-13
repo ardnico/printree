@@ -19,15 +19,16 @@ fn set_console_encoding(encoding: &crate::cli::EncodingMode) {
     use windows_sys::Win32::System::Console::SetConsoleOutputCP;
     unsafe {
         match encoding {
-            crate::cli::EncodingMode::Utf8 => {
-                SetConsoleOutputCP(65001); // UTF-8
+            crate::cli::EncodingMode::Utf8 | crate::cli::EncodingMode::Utf8bom => {
+                SetConsoleOutputCP(65001);
             }
             crate::cli::EncodingMode::Sjis => {
-                SetConsoleOutputCP(932); // CP932 (Shift-JIS)
+                SetConsoleOutputCP(932);
             }
-            crate::cli::EncodingMode::Auto => {
-                // Do nothing, use system default
+            crate::cli::EncodingMode::Utf16le => {
+                SetConsoleOutputCP(1200);
             }
+            crate::cli::EncodingMode::Auto => {}
         }
     }
 }

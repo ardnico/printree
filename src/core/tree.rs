@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
+use encoding_rs::{UTF_8, UTF_16LE, SHIFT_JIS, Encoder};
+use std::io::{self, Write};
 
 use anyhow::Result;
 use serde::Serialize;
@@ -23,6 +24,60 @@ pub fn run_tree(cli: &Cli) -> Result<()> {
     }
 }
 
+
+// ---------------------------------------------------------------------
+// Encoding
+// ---------------------------------------------------------------------
+fn make_encoded_writer<'a>(
+    encoding: &crate::cli::EncodingMode,
+) -> Box<dyn Write + 'a> {
+    let stdout = io::stdout();
+    let handle = stdout.lock();
+    let writer: Box<dyn Write> = match encoding {
+        crate::cli::EncodingMode::Utf8 => Box::new(handle),
+        crate::cli::EncodingMode::Utf8bom => {
+            let mut h = handle;
+            h.write_all(&[0xEF, 0xBB, 0xBF]).ok();
+            Box::new(h)
+        }
+        crate::cli::EncodingMode::Utf16le => {
+            let mut h = handle;
+            h.write_all(&[0xFF, 0xFE]).ok(); // UTF-16 LE BOM
+            Box::new(EncodingWriter::new(h, UTF_16LE.new_encoder()))
+        }
+        crate::cli::EncodingMode::Sjis => {
+            Box::new(EncodingWriter::new(handle, SHIFT_JIS.new_encoder()))
+        }
+        crate::cli::EncodingMode::Auto => Box::new(handle),
+    };
+    writer
+}
+
+/// 出力時の再エンコードを行う構造体
+struct EncodingWriter<W: Write> {
+    inner: W,
+    encoder: Encoder,
+}
+
+impl<W: Write> EncodingWriter<W> {
+    fn new(inner: W, encoder: Encoder) -> Self {
+        Self { inner, encoder }
+    }
+}
+
+impl<W: Write> Write for EncodingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let s = std::str::from_utf8(buf).unwrap_or("");
+        let (encoded, _, _) = self.encoder.encode_from_utf8(s, &mut Vec::new(), false);
+        self.inner.write_all(&encoded)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 // ---------------------------------------------------------------------
 // PLAIN 出力モード
 // ---------------------------------------------------------------------
@@ -32,7 +87,7 @@ fn run_tree_plain(
     include_glob: &Option<globset::GlobSet>,
     exclude_glob: &Option<globset::GlobSet>,
 ) -> Result<()> {
-    let mut out = StandardStream::stdout(color_choice(cli.color));
+    let mut out = make_encoded_writer(&cli.encoding);
     out.set_color(ColorSpec::new().set_bold(true))?;
     writeln!(&mut out, "{}", root.display())?;
     out.reset()?;
