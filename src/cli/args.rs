@@ -3,7 +3,10 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(name = "printree")]
 #[command(about = "Print directory tree recursively", long_about = None)]
-#[command(version, about = "Fast, memory-light directory tree & git diff printer")]
+#[command(
+    version,
+    about = "Fast, memory-light directory tree & git diff printer"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub cmd: Option<Cmd>,
@@ -39,6 +42,10 @@ pub struct Cli {
     #[arg(long = "exclude")]
     pub excludes: Vec<String>,
 
+    /// Pattern syntax for include/exclude filters
+    #[arg(long = "pattern-syntax", value_enum, default_value_t = PatternSyntax::Glob)]
+    pub pattern_syntax: PatternSyntax,
+
     /// name/path match basis for globs
     #[arg(long, value_enum, default_value_t = MatchMode::Name)]
     pub match_mode: MatchMode,
@@ -60,8 +67,13 @@ pub struct Cli {
     pub format: Format,
 
     /// Output text encoding
-    
-    #[arg(long, value_enum, default_value = "utf8", help = "Output encoding: utf8 | utf8bom | utf16le | sjis | auto")]
+
+    #[arg(
+        long,
+        value_enum,
+        default_value = "utf8",
+        help = "Output encoding: utf8 | utf8bom | utf16le | sjis | auto"
+    )]
     pub encoding: EncodingMode,
 }
 
@@ -92,19 +104,45 @@ pub enum EncodingMode {
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
-pub enum SortMode { None, Name }
+pub enum SortMode {
+    None,
+    Name,
+}
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
-pub enum MatchMode { Name, Path }
+pub enum MatchMode {
+    Name,
+    Path,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum PatternSyntax {
+    Glob,
+    Regex,
+}
 
 #[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
-pub enum TypeFilter { File, Dir, Symlink }
+pub enum TypeFilter {
+    File,
+    Dir,
+    Symlink,
+}
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
-pub enum GitignoreMode { On, Off }
+pub enum GitignoreMode {
+    On,
+    Off,
+}
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
-pub enum ColorMode { Auto, Always, Never }
+pub enum ColorMode {
+    Auto,
+    Always,
+    Never,
+}
 
 #[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
-pub enum Format { Plain, Json }
+pub enum Format {
+    Plain,
+    Json,
+}

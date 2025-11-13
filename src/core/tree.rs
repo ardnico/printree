@@ -9,13 +9,15 @@ use serde::Serialize;
 use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
 
 use crate::cli::{Cli, Format, SortMode};
-use crate::utils::{allow_type, build_globset, color_choice, is_hidden, match_globs, Frame};
+use crate::utils::{
+    allow_type, build_patterns, color_choice, is_hidden, match_globs, Frame, PatternList,
+};
 
 /// ディレクトリツリーのメイン実行関数
 pub fn run_tree(cli: &Cli) -> Result<()> {
     let root = cli.path.clone().unwrap_or_else(|| PathBuf::from("."));
-    let include_glob = build_globset(&cli.includes)?;
-    let exclude_glob = build_globset(&cli.excludes)?;
+    let include_glob = build_patterns(&cli.includes, cli.pattern_syntax, true)?;
+    let exclude_glob = build_patterns(&cli.excludes, cli.pattern_syntax, false)?;
 
     if cli.format == Format::Json {
         run_tree_json(&root, cli, &include_glob, &exclude_glob)
@@ -100,8 +102,8 @@ impl<W: WriteColor> WriteColor for EncodingWriter<W> {
 fn run_tree_plain(
     root: &Path,
     cli: &Cli,
-    include_glob: &Option<globset::GlobSet>,
-    exclude_glob: &Option<globset::GlobSet>,
+    include_glob: &Option<PatternList>,
+    exclude_glob: &Option<PatternList>,
 ) -> Result<()> {
     let mut out = make_encoded_writer(cli);
     out.set_color(ColorSpec::new().set_bold(true))?;
@@ -232,8 +234,8 @@ fn run_tree_plain(
 fn run_tree_json(
     root: &Path,
     cli: &Cli,
-    include_glob: &Option<globset::GlobSet>,
-    exclude_glob: &Option<globset::GlobSet>,
+    include_glob: &Option<PatternList>,
+    exclude_glob: &Option<PatternList>,
 ) -> Result<()> {
     #[derive(Serialize)]
     struct JsonEntry<'a> {
@@ -393,8 +395,8 @@ fn read_dir_frame(
     prefix: &str,
     depth: usize,
     cli: &Cli,
-    include_glob: &Option<globset::GlobSet>,
-    exclude_glob: &Option<globset::GlobSet>,
+    include_glob: &Option<PatternList>,
+    exclude_glob: &Option<PatternList>,
 ) -> Result<Option<Frame>> {
     let rd = match fs::read_dir(path) {
         Ok(r) => r,
