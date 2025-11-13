@@ -6,7 +6,7 @@ use std::path::Path;
 use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
 
 use crate::cli::{Cli, Format};
-use crate::utils::{allow_type, build_patterns, color_choice, match_globs};
+use crate::utils::{allow_type, build_patterns, color_choice, match_globs, PatternList};
 
 #[derive(Serialize)]
 struct JsonEntry<'a> {
