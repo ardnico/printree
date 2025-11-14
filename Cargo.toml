@@ -2,6 +2,18 @@
 name = "printree"
 version = "0.4.0"
 edition = "2021"
+license = "Apache-2.0"
+description = "Cross-platform CLI to print directory trees with encoding-aware previews"
+readme = "README.adoc"
+
+[package.metadata.generate-rpm]
+summary = "CLI to print directory trees with encoding-aware previews"
+license = "Apache-2.0"
+assets = [
+    { source = "target/x86_64-unknown-linux-gnu/release/printree", dest = "/usr/bin/printree", mode = "755" },
+    { source = "README.adoc", dest = "/usr/share/doc/printree/README.adoc", mode = "644" },
+    { source = "LICENSE", dest = "/usr/share/licenses/printree/LICENSE", mode = "644" },
+]
 
 [dependencies]
 encoding_rs = "0.8"
