@@ -64,10 +64,7 @@ pub fn allow_type(ty: &fs::FileType, types: &[TypeFilter]) -> bool {
 
 fn target_for_glob(root: &Path, path: &Path, mode: MatchMode) -> PathBuf {
     match mode {
-        MatchMode::Name => path
-            .file_name()
-            .map(|s| PathBuf::from(s))
-            .unwrap_or_default(),
+        MatchMode::Name => path.file_name().map(PathBuf::from).unwrap_or_default(),
         MatchMode::Path => path.strip_prefix(root).unwrap_or(path).to_path_buf(),
     }
 }
@@ -121,12 +118,8 @@ mod tests {
 
     #[test]
     fn match_mode_path_uses_root_prefix_for_globs() {
-        let include = build_patterns(
-            &vec!["src/utils/**".to_string()],
-            PatternSyntax::Glob,
-            false,
-        )
-        .expect("building include glob");
+        let include = build_patterns(&["src/utils/**".to_string()], PatternSyntax::Glob, false)
+            .expect("building include glob");
         let root = Path::new("/project");
         let included_path = root.join("src/utils/filter.rs");
         let excluded_path = root.join("src/bin/main.rs");
@@ -149,7 +142,7 @@ mod tests {
 
     #[test]
     fn include_patterns_support_partial_match_without_glob() {
-        let include = build_patterns(&vec!["util".to_string()], PatternSyntax::Glob, true)
+        let include = build_patterns(&["util".to_string()], PatternSyntax::Glob, true)
             .expect("build patterns")
             .expect("pattern list");
         let root = Path::new("/project");
@@ -159,7 +152,7 @@ mod tests {
 
     #[test]
     fn regex_patterns_are_supported() {
-        let include = build_patterns(&vec![r"src/.+".to_string()], PatternSyntax::Regex, true)
+        let include = build_patterns(&[r"src/.+".to_string()], PatternSyntax::Regex, true)
             .expect("build regex patterns");
         let root = Path::new("/project");
         let included_path = root.join("src/utils/filter.rs");

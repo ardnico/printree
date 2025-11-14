@@ -37,14 +37,17 @@ fn main() -> Result<()> {
     #[cfg(windows)]
     enable_utf8_output();
     let cli = Cli::parse();
-    
+
     #[cfg(windows)]
     set_console_encoding(&cli.encoding);
 
     match &cli.cmd {
-        Some(Cmd::Diff { rev_a, rev_b, path, format }) => {
-            core::diff::run_diff(rev_a, rev_b, path.as_deref(), *format)
-        }
+        Some(Cmd::Diff {
+            rev_a,
+            rev_b,
+            path,
+            format,
+        }) => core::diff::run_diff(rev_a, rev_b, path.as_deref(), *format),
         None => match cli.gitignore {
             GitignoreMode::On => core::tree_gitignore::run_tree_gitignore(&cli),
             GitignoreMode::Off => core::tree::run_tree(&cli),
