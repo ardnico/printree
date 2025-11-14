@@ -58,7 +58,7 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-gnu
             ext: ".exe"
-          - os: macos-latest
+          - os: macos-13
             target: x86_64-apple-darwin
             ext: ""
     steps:
@@ -103,19 +103,12 @@ jobs:
       # Windows: Inno Setup installer
       - name: Build Windows installer
         if: matrix.os == 'windows-latest'
+        shell: pwsh
         run: |
-          choco install innosetup
-          echo "[Setup]" > printree.iss
-          echo "AppName=printree" >> printree.iss
-          echo "AppVersion=${{ needs.version-sync.outputs.version }}" >> printree.iss
-          echo "DefaultDirName={pf}\\printree" >> printree.iss
-          echo "OutputBaseFilename=printree_setup" >> printree.iss
-          echo "[Files]" >> printree.iss
-          echo "Source: \"target\\${{ matrix.target }}\\release\\printree.exe\"; DestDir: \"{app}\"" >> printree.iss
-          echo "[Icons]" >> printree.iss
-          echo "Name: \"{group}\\printree\"; Filename: \"{app}\\printree.exe\"" >> printree.iss
-          iscc printree.iss
-          mv Output/printree_setup.exe dist/printree_installer_${{ needs.version-sync.outputs.version }}.exe
+          choco install --no-progress innosetup
+          Copy-Item installer\printree.iss .
+          iscc /DMyAppVersion=${{ needs.version-sync.outputs.version }} printree.iss
+          Move-Item -Path Output\printree_setup.exe -Destination dist\printree_installer_${{ needs.version-sync.outputs.version }}.exe
 
       # ───────────────────────────────
       # macOS: zip
