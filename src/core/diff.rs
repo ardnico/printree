@@ -105,11 +105,15 @@ fn render_diff_plain(
         &root,
         "",
         "",
-        true,
-        false,
-        false,
-        &statuses_old,
-        &statuses_new,
+        RenderFlags {
+            is_root: true,
+            is_last_old: false,
+            is_last_new: false,
+        },
+        &StatusMaps {
+            old: &statuses_old,
+            new: &statuses_new,
+        },
         &mut lines,
     );
 
@@ -433,32 +437,32 @@ fn apply_presence_defaults(
     }
 }
 
+struct RenderFlags {
+    is_root: bool,
+    is_last_old: bool,
+    is_last_new: bool,
+}
+
+struct StatusMaps<'a> {
+    old: &'a HashMap<PathBuf, char>,
+    new: &'a HashMap<PathBuf, char>,
+}
+
 fn render_node(
     node: &CombinedNode,
     prefix_old: &str,
     prefix_new: &str,
-    is_root: bool,
-    is_last_old: bool,
-    is_last_new: bool,
-    statuses_old: &HashMap<PathBuf, char>,
-    statuses_new: &HashMap<PathBuf, char>,
+    flags: RenderFlags,
+    statuses: &StatusMaps<'_>,
     lines: &mut Vec<(String, String)>,
 ) {
-    let status_left =
-        statuses_old
-            .get(&node.path)
-            .copied()
-            .unwrap_or_else(|| if is_root { ' ' } else { ' ' });
-    let status_right =
-        statuses_new
-            .get(&node.path)
-            .copied()
-            .unwrap_or_else(|| if is_root { ' ' } else { ' ' });
+    let status_left = statuses.old.get(&node.path).copied().unwrap_or(' ');
+    let status_right = statuses.new.get(&node.path).copied().unwrap_or(' ');
 
-    let branch_old = if is_root {
+    let branch_old = if flags.is_root {
         ""
     } else if node.old_present {
-        if is_last_old {
+        if flags.is_last_old {
             "└── "
         } else {
             "├── "
@@ -467,10 +471,10 @@ fn render_node(
         "    "
     };
 
-    let branch_new = if is_root {
+    let branch_new = if flags.is_root {
         ""
     } else if node.new_present {
-        if is_last_new {
+        if flags.is_last_new {
             "└── "
         } else {
             "├── "
@@ -485,7 +489,7 @@ fn render_node(
         branch_old,
         node.old_present,
         &node.name,
-        is_root,
+        flags.is_root,
     );
     let right_line = format_line(
         status_right,
@@ -493,7 +497,7 @@ fn render_node(
         branch_new,
         node.new_present,
         &node.name,
-        is_root,
+        flags.is_root,
     );
     lines.push((left_line, right_line));
 
@@ -501,12 +505,12 @@ fn render_node(
         return;
     }
 
-    let next_prefix_old = if is_root {
+    let next_prefix_old = if flags.is_root {
         String::new()
     } else {
         let mut s = prefix_old.to_string();
         s.push_str(if node.old_present {
-            if is_last_old {
+            if flags.is_last_old {
                 "    "
             } else {
                 "│   "
@@ -517,12 +521,12 @@ fn render_node(
         s
     };
 
-    let next_prefix_new = if is_root {
+    let next_prefix_new = if flags.is_root {
         String::new()
     } else {
         let mut s = prefix_new.to_string();
         s.push_str(if node.new_present {
-            if is_last_new {
+            if flags.is_last_new {
                 "    "
             } else {
                 "│   "
@@ -552,11 +556,12 @@ fn render_node(
             child,
             &next_prefix_old,
             &next_prefix_new,
-            false,
-            child_is_last_old,
-            child_is_last_new,
-            statuses_old,
-            statuses_new,
+            RenderFlags {
+                is_root: false,
+                is_last_old: child_is_last_old,
+                is_last_new: child_is_last_new,
+            },
+            statuses,
             lines,
         );
 

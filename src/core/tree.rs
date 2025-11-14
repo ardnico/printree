@@ -275,7 +275,7 @@ fn run_tree_json(
     writeln!(&mut stdout)?;
 
     let root_ft = fs::symlink_metadata(root).ok().map(|m| m.file_type());
-    if root_ft.map_or(false, |ft| !ft.is_dir()) || matches!(cli.max_depth, Some(1)) {
+    if root_ft.is_some_and(|ft| !ft.is_dir()) || matches!(cli.max_depth, Some(1)) {
         stdout.flush()?;
         return Ok(());
     }
@@ -436,7 +436,7 @@ fn read_dir_frame(
     }
 
     if matches!(cli.sort, SortMode::Name) {
-        entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+        entries.sort_by_key(|a| a.file_name());
     }
     if cli.dirs_first {
         entries.sort_by(|a, b| {
