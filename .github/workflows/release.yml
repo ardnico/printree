@@ -127,7 +127,10 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: build
+    needs:
+      - version-sync
+      - build
+    if: needs.version-sync.outputs.tag_created == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
