@@ -6,6 +6,19 @@ license = "Apache-2.0"
 description = "Cross-platform CLI to print directory trees with encoding-aware previews"
 readme = "README.adoc"
 
+[package.metadata.deb]
+maintainer = "printree maintainers <maintainers@printree.app>"
+depends = "$auto"
+section = "utils"
+priority = "optional"
+copyright = "2024 printree contributors"
+license-file = ["LICENSE", "0"]
+assets = [
+    ["target/x86_64-unknown-linux-gnu/release/printree", "usr/bin/printree", "755"],
+    ["README.adoc", "usr/share/doc/printree/README.adoc", "644"],
+    ["LICENSE", "usr/share/doc/printree/LICENSE", "644"],
+]
+
 [package.metadata.generate-rpm]
 summary = "CLI to print directory trees with encoding-aware previews"
 license = "Apache-2.0"
