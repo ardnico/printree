@@ -29,6 +29,10 @@ pub fn run_tree(cli: &Cli) -> Result<()> {
     match cli.format {
         Format::Json => run_tree_json(&root, cli, &include_glob, &exclude_glob, &filters),
         Format::Plain => run_tree_plain(&root, cli, &include_glob, &exclude_glob, &filters),
+        Format::Ndjson => run_tree_ndjson(&root, cli, &include_glob, &exclude_glob, &filters),
+        Format::Csv => run_tree_csv(&root, cli, &include_glob, &exclude_glob, &filters),
+        Format::Yaml => run_tree_yaml(&root, cli, &include_glob, &exclude_glob, &filters),
+        Format::Html => run_tree_html(&root, cli, &include_glob, &exclude_glob, &filters),
     }
 }
 
@@ -82,6 +86,34 @@ struct Frame {
     idx: usize,
     prefix: String,
     depth: usize,
+}
+
+struct PlainPending {
+    entry: Entry,
+    prefix: String,
+    is_last: bool,
+    total_size: u64,
+}
+
+impl PlainPending {
+    fn new(mut entry: Entry, prefix: String, is_last: bool) -> Self {
+        entry.size = None;
+        Self {
+            entry,
+            prefix,
+            is_last,
+            total_size: 0,
+        }
+    }
+
+    fn record_child_size(&mut self, child_size: u64) {
+        self.total_size = self.total_size.saturating_add(child_size);
+    }
+}
+
+struct YamlNode {
+    entry: Entry,
+    children: Vec<YamlNode>,
 }
 
 struct Filters {
@@ -739,6 +771,7 @@ fn run_tree_plain(
     }
 
     let mut stack: Vec<Frame> = Vec::new();
+    let mut pending_dirs: Vec<PlainPending> = Vec::new();
     if let Some(frame) = read_dir_frame(root, "", 1, cli, include_glob, exclude_glob, filters)? {
         stack.push(frame);
     }
@@ -746,6 +779,9 @@ fn run_tree_plain(
     while let Some(frame) = stack.last_mut() {
         if frame.idx >= frame.entries.len() {
             stack.pop();
+            if let Some(pending) = pending_dirs.pop() {
+                finalize_pending_dir(out.as_mut(), pending, &mut pending_dirs)?;
+            }
             continue;
         }
 
@@ -763,11 +799,10 @@ fn run_tree_plain(
             &mut visited,
         );
 
-        write_plain_entry(out.as_mut(), &frame.prefix, &entry, is_last)?;
-
         if descend {
             let child_path = entry_meta.path.clone();
-            if let Some(frame) = read_dir_frame(
+            let pending_entry = PlainPending::new(entry, frame.prefix.clone(), is_last);
+            match read_dir_frame(
                 &child_path,
                 &child_prefix,
                 frame.depth + 1,
@@ -776,12 +811,56 @@ fn run_tree_plain(
                 exclude_glob,
                 filters,
             )? {
-                stack.push(frame);
+                Some(child_frame) => {
+                    pending_dirs.push(pending_entry);
+                    stack.push(child_frame);
+                }
+                None => {
+                    finalize_pending_dir(out.as_mut(), pending_entry, &mut pending_dirs)?;
+                }
             }
+        } else {
+            finalize_plain_entry(
+                out.as_mut(),
+                entry,
+                &frame.prefix,
+                is_last,
+                &mut pending_dirs,
+            )?;
         }
     }
 
     Ok(())
+}
+
+fn finalize_pending_dir(
+    out: &mut dyn WriteColor,
+    mut pending: PlainPending,
+    pending_dirs: &mut Vec<PlainPending>,
+) -> io::Result<()> {
+    pending.entry.size = Some(pending.total_size);
+    finalize_plain_entry(
+        out,
+        pending.entry,
+        &pending.prefix,
+        pending.is_last,
+        pending_dirs,
+    )
+}
+
+fn finalize_plain_entry(
+    out: &mut dyn WriteColor,
+    entry: Entry,
+    prefix: &str,
+    is_last: bool,
+    pending_dirs: &mut Vec<PlainPending>,
+) -> io::Result<()> {
+    if let Some(size) = entry.size {
+        if let Some(parent) = pending_dirs.last_mut() {
+            parent.record_child_size(size);
+        }
+    }
+    write_plain_entry(out, prefix, &entry, is_last)
 }
 
 fn write_plain_entry(
@@ -792,6 +871,10 @@ fn write_plain_entry(
 ) -> io::Result<()> {
     let connector = if is_last { "└── " } else { "├── " };
     write!(out, "{}{}", prefix, connector)?;
+
+    if let Some(size) = entry.size {
+        write!(out, "[{size}] ")?;
+    }
 
     match entry.kind {
         EntryKind::Dir => {
@@ -823,10 +906,152 @@ fn write_plain_entry(
     Ok(())
 }
 
+fn write_csv_entry<W: Write>(out: &mut W, entry: &Entry) -> io::Result<()> {
+    csv_escape(out, &entry.name)?;
+    write!(out, ",")?;
+    csv_escape(out, &entry.path)?;
+    write!(out, ",{}", entry.depth)?;
+    write!(out, ",{}", entry_kind_label(entry.kind))?;
+    write!(out, ",")?;
+    if let Some(size) = entry.size {
+        write!(out, "{size}")?;
+    }
+    write!(out, ",")?;
+    if let Some(mtime) = &entry.mtime {
+        csv_escape(out, mtime)?;
+    }
+    write!(out, ",")?;
+    if let Some(perm) = &entry.perm {
+        csv_escape(out, perm)?;
+    }
+    write!(out, ",")?;
+    if let Some(target) = &entry.symlink_target {
+        csv_escape(out, target)?;
+    }
+    write!(out, ",{}", entry.loop_detected)?;
+    write!(out, ",")?;
+    if let Some(err) = &entry.error {
+        csv_escape(out, err)?;
+    }
+    writeln!(out)?;
+    Ok(())
+}
+
+fn csv_escape<W: Write>(out: &mut W, value: &str) -> io::Result<()> {
+    let needs_escape = value.contains(',') || value.contains('\"') || value.contains('\n');
+    if needs_escape {
+        write!(out, "\"")?;
+        for ch in value.chars() {
+            if ch == '"' {
+                write!(out, "\"\"")?;
+            } else {
+                write!(out, "{ch}")?;
+            }
+        }
+        write!(out, "\"")?;
+    } else {
+        write!(out, "{value}")?;
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------
 // JSON 出力モード
 // ---------------------------------------------------------------------
 fn run_tree_json(
+    root: &Path,
+    cli: &Cli,
+    include_glob: &Option<PatternList>,
+    exclude_glob: &Option<PatternList>,
+    filters: &Filters,
+) -> Result<()> {
+    let mut stdout = BufWriter::new(std::io::stdout().lock());
+
+    let root_meta = EntryMeta::from_path(root);
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    if let Some(real) = root_meta
+        .canonical_path
+        .clone()
+        .or_else(|| fs::canonicalize(root).ok())
+    {
+        visited.insert(real);
+    } else {
+        visited.insert(root.to_path_buf());
+    }
+
+    write!(&mut stdout, "[")?;
+    let mut first = true;
+    let mut emit = |entry: &Entry| -> io::Result<()> {
+        if !first {
+            write!(&mut stdout, ",")?;
+        } else {
+            first = false;
+        }
+        writeln!(&mut stdout)?;
+        serde_json::to_writer(&mut stdout, entry)?;
+        Ok(())
+    };
+
+    let root_entry = Entry::from_meta(&root_meta, 0);
+    emit(&root_entry)?;
+
+    if !root_meta.points_to_directory() || matches!(cli.max_depth, Some(1)) {
+        writeln!(&mut stdout)?;
+        write!(&mut stdout, "]\n")?;
+        stdout.flush()?;
+        return Ok(());
+    }
+
+    let mut stack: Vec<Frame> = Vec::new();
+    if let Some(frame) = read_dir_frame(root, "", 1, cli, include_glob, exclude_glob, filters)? {
+        stack.push(frame);
+    }
+
+    while let Some(frame) = stack.last_mut() {
+        if frame.idx >= frame.entries.len() {
+            stack.pop();
+            continue;
+        }
+
+        let idx = frame.idx;
+        let is_last = idx + 1 == frame.entries.len();
+        let entry_meta = &mut frame.entries[idx];
+        frame.idx += 1;
+
+        let (entry, descend, child_prefix) = handle_entry(
+            entry_meta,
+            &frame.prefix,
+            frame.depth,
+            is_last,
+            cli,
+            &mut visited,
+        );
+
+        emit(&entry)?;
+
+        if descend {
+            let child_path = entry_meta.path.clone();
+            if let Some(frame) = read_dir_frame(
+                &child_path,
+                &child_prefix,
+                frame.depth + 1,
+                cli,
+                include_glob,
+                exclude_glob,
+                filters,
+            )? {
+                stack.push(frame);
+            }
+        }
+    }
+
+    writeln!(&mut stdout)?;
+    write!(&mut stdout, "]\n")?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn run_tree_ndjson(
     root: &Path,
     cli: &Cli,
     include_glob: &Option<PatternList>,
@@ -902,6 +1127,417 @@ fn run_tree_json(
 
     stdout.flush()?;
     Ok(())
+}
+
+fn run_tree_csv(
+    root: &Path,
+    cli: &Cli,
+    include_glob: &Option<PatternList>,
+    exclude_glob: &Option<PatternList>,
+    filters: &Filters,
+) -> Result<()> {
+    let mut stdout = BufWriter::new(std::io::stdout().lock());
+    writeln!(
+        &mut stdout,
+        "name,path,depth,kind,size,mtime,perm,symlink_target,loop_detected,error"
+    )?;
+
+    let root_meta = EntryMeta::from_path(root);
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    if let Some(real) = root_meta
+        .canonical_path
+        .clone()
+        .or_else(|| fs::canonicalize(root).ok())
+    {
+        visited.insert(real);
+    } else {
+        visited.insert(root.to_path_buf());
+    }
+
+    let root_entry = Entry::from_meta(&root_meta, 0);
+    write_csv_entry(&mut stdout, &root_entry)?;
+
+    if !root_meta.points_to_directory() || matches!(cli.max_depth, Some(1)) {
+        stdout.flush()?;
+        return Ok(());
+    }
+
+    let mut stack: Vec<Frame> = Vec::new();
+    if let Some(frame) = read_dir_frame(root, "", 1, cli, include_glob, exclude_glob, filters)? {
+        stack.push(frame);
+    }
+
+    while let Some(frame) = stack.last_mut() {
+        if frame.idx >= frame.entries.len() {
+            stack.pop();
+            continue;
+        }
+
+        let idx = frame.idx;
+        let is_last = idx + 1 == frame.entries.len();
+        let entry_meta = &mut frame.entries[idx];
+        frame.idx += 1;
+
+        let (entry, descend, child_prefix) = handle_entry(
+            entry_meta,
+            &frame.prefix,
+            frame.depth,
+            is_last,
+            cli,
+            &mut visited,
+        );
+
+        write_csv_entry(&mut stdout, &entry)?;
+
+        if descend {
+            let child_path = entry_meta.path.clone();
+            if let Some(frame) = read_dir_frame(
+                &child_path,
+                &child_prefix,
+                frame.depth + 1,
+                cli,
+                include_glob,
+                exclude_glob,
+                filters,
+            )? {
+                stack.push(frame);
+            }
+        }
+    }
+
+    stdout.flush()?;
+    Ok(())
+}
+
+fn run_tree_yaml(
+    root: &Path,
+    cli: &Cli,
+    include_glob: &Option<PatternList>,
+    exclude_glob: &Option<PatternList>,
+    filters: &Filters,
+) -> Result<()> {
+    let root_meta = EntryMeta::from_path(root);
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    if let Some(real) = root_meta
+        .canonical_path
+        .clone()
+        .or_else(|| fs::canonicalize(root).ok())
+    {
+        visited.insert(real);
+    } else {
+        visited.insert(root.to_path_buf());
+    }
+
+    let mut root_entry = Entry::from_meta(&root_meta, 0);
+    let mut children = Vec::new();
+
+    if root_meta.points_to_directory() && !matches!(cli.max_depth, Some(1)) {
+        children = build_yaml_children(
+            &root_meta,
+            1,
+            cli,
+            include_glob,
+            exclude_glob,
+            filters,
+            &mut visited,
+        )?;
+
+        let mut total = 0u64;
+        let mut has_sizes = false;
+        for child in &children {
+            if let Some(size) = child.entry.size {
+                total = total.saturating_add(size);
+                has_sizes = true;
+            }
+        }
+        if has_sizes {
+            root_entry.size = Some(total);
+        } else {
+            root_entry.size = None;
+        }
+    }
+
+    let doc = YamlNode {
+        entry: root_entry,
+        children,
+    };
+
+    let mut stdout = BufWriter::new(std::io::stdout().lock());
+    write_yaml_node(&mut stdout, &doc, 0, false)?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn build_yaml_children(
+    parent_meta: &EntryMeta,
+    depth: usize,
+    cli: &Cli,
+    include_glob: &Option<PatternList>,
+    exclude_glob: &Option<PatternList>,
+    filters: &Filters,
+    visited: &mut HashSet<PathBuf>,
+) -> Result<Vec<YamlNode>> {
+    let mut nodes = Vec::new();
+    if let Some(frame) = read_dir_frame(
+        &parent_meta.path,
+        "",
+        depth,
+        cli,
+        include_glob,
+        exclude_glob,
+        filters,
+    )? {
+        for mut meta in frame.entries.into_iter() {
+            let node = build_yaml_node(
+                &mut meta,
+                frame.depth,
+                cli,
+                include_glob,
+                exclude_glob,
+                filters,
+                visited,
+            )?;
+            nodes.push(node);
+        }
+    }
+
+    Ok(nodes)
+}
+
+fn build_yaml_node(
+    meta: &mut EntryMeta,
+    depth: usize,
+    cli: &Cli,
+    include_glob: &Option<PatternList>,
+    exclude_glob: &Option<PatternList>,
+    filters: &Filters,
+    visited: &mut HashSet<PathBuf>,
+) -> Result<YamlNode> {
+    let (mut entry, descend, _child_prefix) = handle_entry(meta, "", depth, true, cli, visited);
+
+    let mut children = Vec::new();
+    if descend {
+        entry.size = None;
+        children = build_yaml_children(
+            meta,
+            depth + 1,
+            cli,
+            include_glob,
+            exclude_glob,
+            filters,
+            visited,
+        )?;
+        let mut total = 0u64;
+        let mut has_sizes = false;
+        for child in &children {
+            if let Some(size) = child.entry.size {
+                total = total.saturating_add(size);
+                has_sizes = true;
+            }
+        }
+        if has_sizes {
+            entry.size = Some(total);
+        }
+    }
+
+    Ok(YamlNode { entry, children })
+}
+
+fn run_tree_html(
+    root: &Path,
+    cli: &Cli,
+    include_glob: &Option<PatternList>,
+    exclude_glob: &Option<PatternList>,
+    filters: &Filters,
+) -> Result<()> {
+    let entries = collect_entries_flat(root, cli, include_glob, exclude_glob, filters)?;
+    let json = serde_json::to_string(&entries)?;
+    let escaped = escape_script_data(&json);
+
+    let mut stdout = BufWriter::new(std::io::stdout().lock());
+    writeln!(&mut stdout, "<!DOCTYPE html>")?;
+    writeln!(&mut stdout, "<html lang=\"en\">")?;
+    writeln!(&mut stdout, "<head>")?;
+    writeln!(&mut stdout, "  <meta charset=\"utf-8\">")?;
+    writeln!(&mut stdout, "  <title>printree</title>")?;
+    writeln!(
+        &mut stdout,
+        "  <style>body {{ font-family: monospace; white-space: pre; margin: 2rem; }}</style>"
+    )?;
+    writeln!(&mut stdout, "</head>")?;
+    writeln!(&mut stdout, "<body>")?;
+    writeln!(
+        &mut stdout,
+        "<script type=\"application/json\" id=\"tree-data\">{}</script>",
+        escaped
+    )?;
+    writeln!(&mut stdout, "<pre id=\"tree-output\"></pre>")?;
+    writeln!(
+        &mut stdout,
+        "<script>const data=JSON.parse(document.getElementById('tree-data').textContent);\nconst lines=data.map(e=>`${{'    '.repeat(e.depth)}}${{e.name}}`);\ndocument.getElementById('tree-output').textContent=lines.join('\\n');</script>"
+    )?;
+    writeln!(&mut stdout, "</body>")?;
+    writeln!(&mut stdout, "</html>")?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn collect_entries_flat(
+    root: &Path,
+    cli: &Cli,
+    include_glob: &Option<PatternList>,
+    exclude_glob: &Option<PatternList>,
+    filters: &Filters,
+) -> Result<Vec<Entry>> {
+    let root_meta = EntryMeta::from_path(root);
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    if let Some(real) = root_meta
+        .canonical_path
+        .clone()
+        .or_else(|| fs::canonicalize(root).ok())
+    {
+        visited.insert(real);
+    } else {
+        visited.insert(root.to_path_buf());
+    }
+
+    let mut entries = Vec::new();
+    entries.push(Entry::from_meta(&root_meta, 0));
+
+    if !root_meta.points_to_directory() || matches!(cli.max_depth, Some(1)) {
+        return Ok(entries);
+    }
+
+    let mut stack: Vec<Frame> = Vec::new();
+    if let Some(frame) = read_dir_frame(root, "", 1, cli, include_glob, exclude_glob, filters)? {
+        stack.push(frame);
+    }
+
+    while let Some(frame) = stack.last_mut() {
+        if frame.idx >= frame.entries.len() {
+            stack.pop();
+            continue;
+        }
+
+        let idx = frame.idx;
+        let is_last = idx + 1 == frame.entries.len();
+        let entry_meta = &mut frame.entries[idx];
+        frame.idx += 1;
+
+        let (entry, descend, child_prefix) = handle_entry(
+            entry_meta,
+            &frame.prefix,
+            frame.depth,
+            is_last,
+            cli,
+            &mut visited,
+        );
+
+        if descend {
+            let child_path = entry_meta.path.clone();
+            if let Some(frame) = read_dir_frame(
+                &child_path,
+                &child_prefix,
+                frame.depth + 1,
+                cli,
+                include_glob,
+                exclude_glob,
+                filters,
+            )? {
+                stack.push(frame);
+            }
+        }
+
+        entries.push(entry);
+    }
+
+    Ok(entries)
+}
+
+fn escape_script_data(data: &str) -> String {
+    data.replace("</script", "<\\/script")
+}
+
+fn write_yaml_node<W: Write>(
+    out: &mut W,
+    node: &YamlNode,
+    indent: usize,
+    with_dash: bool,
+) -> io::Result<()> {
+    let indent_str = " ".repeat(indent);
+    let (line_prefix, child_indent) = if with_dash {
+        (format!("{}- ", indent_str), indent + 2)
+    } else {
+        (indent_str.clone(), indent)
+    };
+
+    writeln!(
+        out,
+        "{}name: {}",
+        line_prefix,
+        serde_json::to_string(&node.entry.name).unwrap()
+    )?;
+    write_yaml_fields(out, child_indent, node)?;
+    Ok(())
+}
+
+fn write_yaml_fields<W: Write>(out: &mut W, indent: usize, node: &YamlNode) -> io::Result<()> {
+    let indent_str = " ".repeat(indent);
+    yaml_write_string(out, indent, "path", &node.entry.path)?;
+    writeln!(out, "{}depth: {}", indent_str, node.entry.depth)?;
+    writeln!(
+        out,
+        "{}kind: {}",
+        indent_str,
+        entry_kind_label(node.entry.kind)
+    )?;
+    if let Some(size) = node.entry.size {
+        writeln!(out, "{}size: {}", indent_str, size)?;
+    }
+    if let Some(mtime) = &node.entry.mtime {
+        yaml_write_string(out, indent, "mtime", mtime)?;
+    }
+    if let Some(perm) = &node.entry.perm {
+        yaml_write_string(out, indent, "perm", perm)?;
+    }
+    if let Some(target) = &node.entry.symlink_target {
+        yaml_write_string(out, indent, "symlink_target", target)?;
+    }
+    writeln!(
+        out,
+        "{}loop_detected: {}",
+        indent_str, node.entry.loop_detected
+    )?;
+    if let Some(err) = &node.entry.error {
+        yaml_write_string(out, indent, "error", err)?;
+    }
+    if !node.children.is_empty() {
+        writeln!(out, "{}children:", indent_str)?;
+        for child in &node.children {
+            write_yaml_node(out, child, indent + 2, true)?;
+        }
+    }
+    Ok(())
+}
+
+fn yaml_write_string<W: Write>(
+    out: &mut W,
+    indent: usize,
+    key: &str,
+    value: &str,
+) -> io::Result<()> {
+    let indent_str = " ".repeat(indent);
+    let quoted = serde_json::to_string(value).unwrap();
+    writeln!(out, "{}{}: {}", indent_str, key, quoted)
+}
+
+fn entry_kind_label(kind: EntryKind) -> &'static str {
+    match kind {
+        EntryKind::File => "file",
+        EntryKind::Dir => "dir",
+        EntryKind::Symlink => "symlink",
+        EntryKind::Unknown => "unknown",
+    }
 }
 
 // ---------------------------------------------------------------------

@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap};
 use std::io::Write;
@@ -63,6 +63,9 @@ pub fn run_diff(rev_a: &str, rev_b: &str, subpath: Option<&Path>, format: Format
                 writeln!(&mut stdout)?;
             }
             stdout.flush()?;
+        }
+        Format::Ndjson | Format::Csv | Format::Yaml | Format::Html => {
+            bail!("format {:?} not supported for diff", format)
         }
     }
 

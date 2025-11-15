@@ -161,4 +161,8 @@ pub enum ColorMode {
 pub enum Format {
     Plain,
     Json,
+    Ndjson,
+    Csv,
+    Yaml,
+    Html,
 }
