@@ -630,6 +630,8 @@ fn parse_perm_filter(spec: &str) -> Result<Option<PermFilter>> {
             expected: value & 0o777,
         }))
     }
+
+    (entry, descend, child_prefix)
 }
 
 impl EntryMeta {
@@ -1514,6 +1516,9 @@ fn run_tree_csv(
     while let Some(frame) = stack.last_mut() {
         if frame.idx >= frame.entries.len() {
             stack.pop();
+            if let Some(pending) = pending_dirs.pop() {
+                finalize_pending_dir(out.as_mut(), pending, &mut pending_dirs)?;
+            }
             continue;
         }
 
@@ -1896,6 +1901,9 @@ fn write_yaml_fields<W: Write>(out: &mut W, indent: usize, node: &YamlNode) -> i
         writeln!(out, "{}children:", indent_str)?;
         for child in &node.children {
             write_yaml_node(out, child, indent + 2, true)?;
+        }
+        if has_sizes {
+            entry.size = Some(total);
         }
     }
     Ok(())
