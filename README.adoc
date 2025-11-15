@@ -4,76 +4,99 @@
 :icons: font
 
 == 概要
-- `printree` は「速い・軽い・拡張しやすい」を目標にしたツリー表示ツールです。
-- 標準は **非再帰・手動スタックDFS** で「その場出力」= 省メモリ
-- include/exclude フィルタに glob/regex を選択可能
-- `.gitignore` 反映の有無を切替可能
-- カラー出力 (auto/always/never)
-- 出力形式は プレーン/JSON、エンコーディングは UTF-8/BOM/UTF-16LE/SJIS/自動判別 に対応
-- 権限エラーは項目の直後に表示して処理継続
-- 2つの Git リビジョンの**差分ツリー**出力（追加/削除/変更）
+- DFS による逐次ストリーム出力で巨大ツリーでも低メモリ。
+- メタデータは各エントリにつき1回だけ取得し、サイズや更新時刻をキャッシュ。
+- plain/json/ndjson/csv/yaml/html など複数フォーマットへ同一パイプラインから出力。
+- glob/regex/type/size/mtime/perm など柔軟なフィルタを組み合わせてディレクトリを絞り込み。
+- Git ステータスとリネーム検出をオプションで表示、差分モードも搭載。
+- --jobs で並列メタデータ収集、--warn-depth で深すぎるツリーを警告。
+- Windows ACL 属性の整形表示とルート外へ抜けるシンボリックリンクの遮断で安全性を確保。
 
 == インストール
 [source,bash]
 ----
-cargo build --release
-target/release/printree --help
+cargo install --path .
+printree --help
 ----
 
 == 使い方
 
-=== 通常のツリー出力
+=== ツリー出力
 [source,bash]
 ----
-printree [PATH] [--max-depth N] [--hidden] [--follow-symlinks]
-          [--sort name|none] [--dirs-first]
-          [--include PATTERN ...] [--exclude PATTERN ...]
-          [--pattern-syntax glob|regex] [--match-mode name|path]
-          [--type file|dir|symlink]...
-          [--gitignore on|off] [--color auto|always|never]
-          [--format plain|json] [--encoding utf8|utf8bom|utf16le|sjis|auto]
+printree [PATH] [OPTIONS]
 ----
 
 主なオプション:
-- `--include/--exclude`: パターンで絞り込み（複数指定可）。`--match-mode` で `name`(既定) か `path` を選択。
-- `--pattern-syntax`: `glob`(既定) または `regex` を選択。
-- `--type`: `file|dir|symlink` を複数指定で合成。
-- `--gitignore on|off`: `.gitignore` を反映するか。`on` の場合、`.gitignore` ルールで除外された項目は非表示。
-- `--color`: 自動検出/常にカラー/カラーなし。
-- `--format`: プレーンテキストか JSON (`plain` が既定)。
-- `--encoding`: 出力テキストのエンコーディング。`utf8` (既定)、UTF-8 BOM 付き、UTF-16LE、Shift_JIS、`auto`(端末に合わせて自動判定)。
-- 権限エラーは `… ── [permission denied]` のように表示しつつ継続。
 
-NOTE: `.gitignore` 反映時は内部的に `ignore` クレートを利用します。出力は深さインデント主体（`├──/└──` の「最後要素検知」は OS 列挙に比べて厳密でない場合があります）。厳密な罫線ツリーを優先する場合は `--gitignore off` を使ってください。
+|===
+| オプション | 説明
 
-=== Git差分
+| `--max-depth <N>` | 探索の最大深さ。`1` はルートのみ。
+| `--hidden` | ドットファイルも表示。
+| `--follow-symlinks` | シンボリックリンクを辿る（ルート外へ抜けるリンクは遮断）。
+| `--sort name|none` | 名前順ソート。`--dirs-first` と組み合わせ可。
+| `--include/--exclude <PATTERN>` | パターンで絞り込み。複数指定可。
+| `--pattern-syntax glob|regex` | include/exclude の構文を選択。
+| `--match-mode name|path` | パターンをファイル名/パスのどちらに適用するか。
+| `--filter-regex <REGEX>` | 正規表現で追加フィルタリング。
+| `--filter-size <COND>` | `>1MB`, `<=10k`, `==0` などのサイズ条件。
+| `--filter-mtime <WINDOW>` | `3d`, `10m`, `2h` といった更新時刻ウィンドウ。
+| `--filter-perm <OCTAL>` | UNIX パーミッション（例 `755`）。Windows では警告のみ。
+| `--type file|dir|symlink` | 表示する種類を限定（複数指定で合成）。
+| `--gitignore on|off` | `.gitignore` を適用するか。`off` が既定。
+| `--git-status` | Git の変更状態を表示。
+| `--git-rename` | Git リネーム検出を有効化（コスト増。`--git-status` を暗黙有効化）。
+| `--color auto|always|never` | カラー出力の制御。
+| `--format plain|json|ndjson|csv|yaml|html` | 出力形式。plain/ndjson/csv は逐次書き出し。
+| `--encoding utf8|utf8bom|utf16le|sjis|auto` | 文字エンコーディング。
+| `--jobs <N>` | メタデータ取得を N 並列で実行。`1` でシングルスレッド。
+| `--warn-depth <N>` | 深さが N を超えたら STDERR に警告（`0` で無効）。
+|===
+
+NOTE: すべてのフィルタは AND 条件です。正規表現や数値条件が無効な場合は起動時にエラー終了します。
+
+==== 出力フォーマット
+
+- `plain`: 罫線付きツリー。ディレクトリは子のサイズを集計して表示し、Git ステータスを色付きで表現。
+- `json`: 全ノードを JSON 配列として出力。
+- `ndjson`: 1 行 1 エントリの JSON。ストリーム処理向き。
+- `csv`: `path`,`name`,`kind`,`size`,`mtime` などの列を CSV で逐次出力。
+- `yaml`: 完全なネスト構造を保持。全エントリを一旦収集してから出力。
+- `html`: JSON を埋め込んだ単一 HTML ドキュメントを生成。
+
+==== Git 連携
+
+- `.git` が見つからない場合は `--git-status`/`--git-rename` を自動的に無効化し、警告のみ表示。
+- ステータスは `[M]`, `[A]`, `[D]`, `[R]` を用い、plain では色付きで表示。
+- リネーム検出を有効にすると `[warn] rename detection enabled (slow)` が STDERR に出力されます。
+
+==== 並列化と安全性
+
+- `--jobs` でメタデータ取得を Rayon プールに委譲。`--jobs 0` やマイナス値はエラーになります。
+- 深すぎるツリーを巡回する際は `--warn-depth` に達すると一度だけ警告を表示。
+- ルートディレクトリの正規化パスを保持し、ルート外へ抜けるシンボリックリンクは遮断して `loop_detected`/`[security]` を出力。
+- Windows では `windows-sys` を使用し、隠し属性や読み取り専用などの ACL 情報を整形表示します。
+
+=== Git差分モード
 [source,bash]
 ----
-printree diff --rev-a <HASH|REF> --rev-b <HASH|REF> [--path SUBDIR]
-               [--include PATTERN ...] [--exclude PATTERN ...]
-               [--pattern-syntax glob|regex] [--match-mode name|path]
-               [--type file|dir|symlink]...
-               [--color auto|always|never]
-               [--format plain|json]
+printree diff --rev-a <HASH|REF> --rev-b <HASH|REF> [--path SUBDIR] [--format plain|json]
 ----
 
-- `--rev-a`, `--rev-b`: 比較する2リビジョン（コミットハッシュや `HEAD~1` 等）
-- `--path`: リポジトリ直下からの相対サブディレクトリに限定
-- `--pattern-syntax`: 差分でも glob/regex を選択
-- 出力色: `+`=追加(緑), `-`=削除(赤), `~`=内容変更(黄)
-- `--format`: JSON を含む機械可読出力にも対応
+- 2 リビジョン間のファイル追加/削除/変更をツリー形式で表示。
+- `--include/--exclude` や `--pattern-syntax` はツリー表示と同じく利用可能。
+- 出力形式は `plain` または `json`。その他のフォーマットを指定するとエラーになります。
 
-== 速度とメモリ
-- 常に**逐次出力**（全体の保持なし）
-- メタデータ呼び出しは最小化（`file_type()` 優先）
-- `.gitignore on` 時もストリーム処理で**低メモリ**
-
-== 発展アイデア
-- 並列探索（`threads` オプション）
-- JSON/NDJSON/DOT など機械可読出力
-- サイズや時刻によるフィルタ（`--size '>=1MiB'` など）
-- シンボリックリンクの循環検知（(dev,inode) トラッキング）
+== パフォーマンスとアーキテクチャ
+- 逐次 DFS で探索順序は安定化済みソート後に固定。
+- 各エントリのメタデータは 1 回だけ取得してキャッシュし、再利用します。
+- フォーマッタは共通の `Entry` 表現を受け取り、必要な情報のみをシリアライズ。
 
 == 既知の注意
-- Windows 隠し属性の検出は既定無効（速度優先）。必要なら将来拡張で対応。
-- `.gitignore` の厳密なツリー罫線は制約上完全一致しない場合があります（インデントは保証）。
+- `.gitignore` モードでは厳密な罫線位置が通常モードと異なる場合があります（インデントは保証）。
+- Windows の `--filter-perm` は属性体系の差異により警告のみで無効です。
+
+== ライセンス
+MIT
+
