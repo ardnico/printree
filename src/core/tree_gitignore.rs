@@ -241,11 +241,19 @@ mod tests {
             excludes: vec![],
             pattern_syntax: crate::cli::PatternSyntax::Glob,
             match_mode: crate::cli::MatchMode::Path,
+            filter_regex: None,
+            filter_size: None,
+            filter_mtime: None,
+            filter_perm: None,
             types: vec![],
             gitignore: crate::cli::GitignoreMode::On,
+            git_status: false,
+            git_rename: false,
             color: crate::cli::ColorMode::Never,
             format: crate::cli::Format::Json,
             encoding: crate::cli::EncodingMode::Utf8,
+            jobs: 1,
+            warn_depth: 5000,
         };
 
         run_tree_gitignore(&cli).unwrap();
