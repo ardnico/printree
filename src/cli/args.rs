@@ -50,6 +50,22 @@ pub struct Cli {
     #[arg(long, value_enum, default_value_t = MatchMode::Name)]
     pub match_mode: MatchMode,
 
+    /// Regex filter applied after glob matching
+    #[arg(long = "filter-regex")]
+    pub filter_regex: Option<String>,
+
+    /// File size filter, e.g. ">1MB" or "<=10k"
+    #[arg(long = "filter-size")]
+    pub filter_size: Option<String>,
+
+    /// Modified-time filter window like "3d", "10m", "2h"
+    #[arg(long = "filter-mtime")]
+    pub filter_mtime: Option<String>,
+
+    /// Permission filter (octal, e.g. 755)
+    #[arg(long = "filter-perm")]
+    pub filter_perm: Option<String>,
+
     /// Type filter: file|dir|symlink (repeatable)
     #[arg(long = "type", value_enum)]
     pub types: Vec<TypeFilter>,
@@ -57,6 +73,14 @@ pub struct Cli {
     /// Use .gitignore rules
     #[arg(long, value_enum, default_value_t = GitignoreMode::Off)]
     pub gitignore: GitignoreMode,
+
+    /// Show git status markers for entries
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub git_status: bool,
+
+    /// Enable git rename detection (implies git status)
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub git_rename: bool,
 
     /// Color output
     #[arg(long, value_enum, default_value_t = ColorMode::Never)]
@@ -75,6 +99,14 @@ pub struct Cli {
         help = "Output encoding: utf8 | utf8bom | utf16le | sjis | auto"
     )]
     pub encoding: EncodingMode,
+
+    /// Number of worker jobs (1 = disabled)
+    #[arg(long, default_value_t = 1)]
+    pub jobs: usize,
+
+    /// Warn when traversal depth exceeds this threshold (0 = disable)
+    #[arg(long = "warn-depth", default_value_t = 5000)]
+    pub warn_depth: usize,
 }
 
 #[derive(Subcommand, Debug)]
@@ -145,4 +177,8 @@ pub enum ColorMode {
 pub enum Format {
     Plain,
     Json,
+    Ndjson,
+    Csv,
+    Yaml,
+    Html,
 }
