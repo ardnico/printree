@@ -702,6 +702,7 @@ impl EntryMeta {
     ) -> Self {
         let mut size = None;
         let mut mtime = None;
+        #[cfg_attr(windows, allow(unused_mut))]
         let mut perm_unix = None;
         #[cfg_attr(not(windows), allow(unused_mut))]
         let mut perm_win = None;
@@ -929,7 +930,19 @@ impl Entry {
     }
 }
 
+#[allow(dead_code)]
 fn handle_entry(
+    entry_meta: &mut EntryMeta,
+    prefix: &str,
+    depth: usize,
+    is_last: bool,
+    cli: &Cli,
+    visited: &mut HashSet<PathBuf>,
+) -> (Entry, bool, String) {
+    handle_entry_with_guard(entry_meta, prefix, depth, is_last, cli, visited, None)
+}
+
+fn handle_entry_with_guard(
     entry_meta: &mut EntryMeta,
     prefix: &str,
     depth: usize,
@@ -1145,7 +1158,7 @@ fn run_tree_plain(
         let entry_meta = &mut frame.entries[idx];
         frame.idx += 1;
 
-        let (entry, descend, child_prefix) = handle_entry(
+        let (entry, descend, child_prefix) = handle_entry_with_guard(
             entry_meta,
             &frame.prefix,
             frame.depth,
@@ -1418,7 +1431,7 @@ fn run_tree_json(
         let entry_meta = &mut frame.entries[idx];
         frame.idx += 1;
 
-        let (entry, descend, child_prefix) = handle_entry(
+        let (entry, descend, child_prefix) = handle_entry_with_guard(
             entry_meta,
             &frame.prefix,
             frame.depth,
@@ -1511,7 +1524,7 @@ fn run_tree_ndjson(
         let entry_meta = &mut frame.entries[idx];
         frame.idx += 1;
 
-        let (entry, descend, child_prefix) = handle_entry(
+        let (entry, descend, child_prefix) = handle_entry_with_guard(
             entry_meta,
             &frame.prefix,
             frame.depth,
@@ -1606,7 +1619,7 @@ fn run_tree_csv(
         let entry_meta = &mut frame.entries[idx];
         frame.idx += 1;
 
-        let (entry, descend, child_prefix) = handle_entry(
+        let (entry, descend, child_prefix) = handle_entry_with_guard(
             entry_meta,
             &frame.prefix,
             frame.depth,
@@ -1614,22 +1627,6 @@ fn run_tree_csv(
             cli,
             &mut visited,
             root_guard,
-        );
-
-        write_csv_entry(&mut stdout, &entry)?;
-
-        let idx = frame.idx;
-        let is_last = idx + 1 == frame.entries.len();
-        let entry_meta = &mut frame.entries[idx];
-        frame.idx += 1;
-
-        let (entry, descend, child_prefix) = handle_entry(
-            entry_meta,
-            &frame.prefix,
-            frame.depth,
-            is_last,
-            cli,
-            &mut visited,
         );
 
         write_csv_entry(&mut stdout, &entry)?;
@@ -1776,7 +1773,7 @@ fn build_yaml_node(
     root_guard: Option<&Path>,
 ) -> Result<YamlNode> {
     let (mut entry, descend, _child_prefix) =
-        handle_entry(meta, "", depth, true, cli, visited, root_guard);
+        handle_entry_with_guard(meta, "", depth, true, cli, visited, root_guard);
 
     let mut children = Vec::new();
     if descend {
@@ -1903,7 +1900,7 @@ fn collect_entries_flat(
         let entry_meta = &mut frame.entries[idx];
         frame.idx += 1;
 
-        let (entry, descend, child_prefix) = handle_entry(
+        let (entry, descend, child_prefix) = handle_entry_with_guard(
             entry_meta,
             &frame.prefix,
             frame.depth,
