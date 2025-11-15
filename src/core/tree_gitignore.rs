@@ -247,9 +247,13 @@ mod tests {
             filter_perm: None,
             types: vec![],
             gitignore: crate::cli::GitignoreMode::On,
+            git_status: false,
+            git_rename: false,
             color: crate::cli::ColorMode::Never,
             format: crate::cli::Format::Json,
             encoding: crate::cli::EncodingMode::Utf8,
+            jobs: 1,
+            warn_depth: 5000,
         };
 
         run_tree_gitignore(&cli).unwrap();

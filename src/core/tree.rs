@@ -1,12 +1,16 @@
 use encoding_rs::{Encoding, SHIFT_JIS, UTF_16LE};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::env;
 use std::ffi::OsString;
-use std::fs::{self, DirEntry, FileType, Metadata};
+use std::fs::{self, FileType, Metadata};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Result};
+use git2::{ErrorCode, Repository, Status, StatusOptions};
 use regex_automata::meta::Regex;
 use serde::Serialize;
 use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
@@ -25,14 +29,64 @@ pub fn run_tree(cli: &Cli) -> Result<()> {
     let include_glob = build_patterns(&cli.includes, cli.pattern_syntax, true)?;
     let exclude_glob = build_patterns(&cli.excludes, cli.pattern_syntax, false)?;
     let filters = Filters::from_cli(cli, &root)?;
+    let git = GitTracker::prepare(&root, cli)?;
+    let jobs = JobPool::new(cli)?;
 
     match cli.format {
-        Format::Json => run_tree_json(&root, cli, &include_glob, &exclude_glob, &filters),
-        Format::Plain => run_tree_plain(&root, cli, &include_glob, &exclude_glob, &filters),
-        Format::Ndjson => run_tree_ndjson(&root, cli, &include_glob, &exclude_glob, &filters),
-        Format::Csv => run_tree_csv(&root, cli, &include_glob, &exclude_glob, &filters),
-        Format::Yaml => run_tree_yaml(&root, cli, &include_glob, &exclude_glob, &filters),
-        Format::Html => run_tree_html(&root, cli, &include_glob, &exclude_glob, &filters),
+        Format::Json => run_tree_json(
+            &root,
+            cli,
+            &include_glob,
+            &exclude_glob,
+            &filters,
+            &git,
+            &jobs,
+        ),
+        Format::Plain => run_tree_plain(
+            &root,
+            cli,
+            &include_glob,
+            &exclude_glob,
+            &filters,
+            &git,
+            &jobs,
+        ),
+        Format::Ndjson => run_tree_ndjson(
+            &root,
+            cli,
+            &include_glob,
+            &exclude_glob,
+            &filters,
+            &git,
+            &jobs,
+        ),
+        Format::Csv => run_tree_csv(
+            &root,
+            cli,
+            &include_glob,
+            &exclude_glob,
+            &filters,
+            &git,
+            &jobs,
+        ),
+        Format::Yaml => run_tree_yaml(
+            &root,
+            cli,
+            &include_glob,
+            &exclude_glob,
+            &filters,
+            &git,
+            &jobs,
+        ),
+        Format::Html => run_tree_html(
+            &root,
+            cli,
+            &include_glob,
+            &exclude_glob,
+            &filters,
+            &git,
+            &jobs,
+        ),
     }
 }
 
@@ -51,6 +105,7 @@ struct EntryMeta {
     canonical_path: Option<PathBuf>,
     loop_detected: bool,
     error: Option<String>,
+    git_status: Option<char>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -70,6 +125,8 @@ struct Entry {
     loop_detected: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git_status: Option<char>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -114,6 +171,195 @@ impl PlainPending {
 struct YamlNode {
     entry: Entry,
     children: Vec<YamlNode>,
+}
+
+#[derive(Clone)]
+struct EntrySeed {
+    path: PathBuf,
+    name: OsString,
+    file_type_hint: Option<FileType>,
+    file_type_error: Option<String>,
+}
+
+struct GitTracker {
+    map: Option<GitStatusMap>,
+}
+
+struct GitStatusMap {
+    workdir: PathBuf,
+    cwd: PathBuf,
+    statuses: HashMap<PathBuf, char>,
+}
+
+struct JobPool {
+    workers: usize,
+}
+
+impl JobPool {
+    fn new(cli: &Cli) -> Result<Self> {
+        let mut jobs = cli.jobs;
+        if jobs == 0 {
+            return Err(anyhow!("--jobs must be >= 1"));
+        }
+        if jobs > 256 {
+            eprintln!("[warn] --jobs value {jobs} clamped to 256");
+            jobs = 256;
+        }
+        #[cfg(windows)]
+        if jobs > 64 {
+            eprintln!("[warn] high --jobs values may perform poorly on Windows");
+        }
+        Ok(Self { workers: jobs })
+    }
+
+    fn workers(&self) -> usize {
+        self.workers
+    }
+
+    fn is_parallel(&self) -> bool {
+        self.workers > 1
+    }
+}
+
+impl GitTracker {
+    fn prepare(root: &Path, cli: &Cli) -> Result<Self> {
+        let want_status = cli.git_status || cli.git_rename;
+        if !want_status {
+            return Ok(Self { map: None });
+        }
+
+        if cli.git_rename {
+            eprintln!("[warn] rename detection enabled (slow)");
+        }
+
+        let cwd = env::current_dir()?;
+        let repo = match Repository::discover(root) {
+            Ok(repo) => repo,
+            Err(err) if err.code() == ErrorCode::NotFound => {
+                if cli.git_status || cli.git_rename {
+                    eprintln!("[warn] --git-status ignored: .git not found");
+                }
+                return Ok(Self { map: None });
+            }
+            Err(err) => return Err(anyhow!(err)),
+        };
+
+        let workdir = match repo.workdir() {
+            Some(dir) => dir.to_path_buf(),
+            None => {
+                eprintln!("[warn] --git-status ignored: repository has no workdir");
+                return Ok(Self { map: None });
+            }
+        };
+
+        let mut opts = StatusOptions::new();
+        opts.include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .include_ignored(false)
+            .include_unreadable(true);
+        if cli.git_rename {
+            opts.renames_head_to_index(true);
+            opts.renames_index_to_workdir(true);
+            opts.renames_from_rewrites(true);
+        }
+
+        let statuses = repo.statuses(Some(&mut opts))?;
+        let mut map = HashMap::new();
+        for entry in statuses.iter() {
+            if let Some(symbol) = git_status_symbol(entry.status()) {
+                if let Some(path) = status_entry_path(&entry) {
+                    update_git_status(&mut map, path, symbol);
+                }
+            }
+        }
+
+        Ok(Self {
+            map: Some(GitStatusMap {
+                workdir,
+                cwd,
+                statuses: map,
+            }),
+        })
+    }
+
+    fn apply(&self, meta: &mut EntryMeta) {
+        if let Some(map) = &self.map {
+            meta.git_status = map.status_for(&meta.path);
+        }
+    }
+}
+
+impl GitStatusMap {
+    fn status_for(&self, path: &Path) -> Option<char> {
+        let abs = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.cwd.join(path)
+        };
+        let rel = abs.strip_prefix(&self.workdir).ok()?;
+        if rel.as_os_str().is_empty() {
+            return None;
+        }
+        self.statuses.get(rel).copied()
+    }
+}
+
+fn status_entry_path(entry: &git2::StatusEntry<'_>) -> Option<PathBuf> {
+    if let Some(delta) = entry.index_to_workdir() {
+        if let Some(path) = delta.new_file().path() {
+            return Some(path.to_path_buf());
+        }
+    }
+    if let Some(delta) = entry.head_to_index() {
+        if let Some(path) = delta.new_file().path() {
+            return Some(path.to_path_buf());
+        }
+        if let Some(path) = delta.old_file().path() {
+            return Some(path.to_path_buf());
+        }
+    }
+    entry.path().map(PathBuf::from)
+}
+
+fn git_status_symbol(status: Status) -> Option<char> {
+    if status.is_wt_deleted() || status.is_index_deleted() {
+        Some('D')
+    } else if status.is_wt_renamed() || status.is_index_renamed() {
+        Some('R')
+    } else if status.is_wt_new() || status.is_index_new() {
+        Some('A')
+    } else if status.is_wt_modified()
+        || status.is_index_modified()
+        || status.is_wt_typechange()
+        || status.is_index_typechange()
+    {
+        Some('M')
+    } else {
+        None
+    }
+}
+
+fn update_git_status(map: &mut HashMap<PathBuf, char>, path: PathBuf, status: char) {
+    match map.entry(path) {
+        std::collections::hash_map::Entry::Occupied(mut occ) => {
+            if git_status_priority(status) > git_status_priority(*occ.get()) {
+                occ.insert(status);
+            }
+        }
+        std::collections::hash_map::Entry::Vacant(vac) => {
+            vac.insert(status);
+        }
+    }
+}
+
+fn git_status_priority(symbol: char) -> u8 {
+    match symbol {
+        'D' => 4,
+        'R' => 3,
+        'A' => 2,
+        'M' => 1,
+        _ => 0,
+    }
 }
 
 struct Filters {
@@ -384,44 +630,11 @@ fn parse_perm_filter(spec: &str) -> Result<Option<PermFilter>> {
             expected: value & 0o777,
         }))
     }
+
+    (entry, descend, child_prefix)
 }
 
 impl EntryMeta {
-    fn build(
-        entry: DirEntry,
-        file_type_hint: Option<FileType>,
-        file_type_error: Option<String>,
-    ) -> Self {
-        let path = entry.path();
-        let name = entry.file_name();
-        let mut errors = Vec::new();
-        if let Some(err) = file_type_error {
-            errors.push(err);
-        }
-
-        let mut file_type = file_type_hint;
-        if file_type.is_none() {
-            if let Ok(ft) = entry.file_type() {
-                file_type = Some(ft);
-            }
-        }
-
-        let metadata = entry
-            .metadata()
-            .map_err(|err| {
-                errors.push(err.to_string());
-                err
-            })
-            .ok();
-
-        if file_type.is_none() {
-            file_type = metadata.as_ref().map(|m| m.file_type());
-        }
-
-        let is_symlink = file_type.map(|ft| ft.is_symlink()).unwrap_or(false);
-        Self::construct(path, name, file_type, metadata, is_symlink, errors)
-    }
-
     fn from_path(path: &Path) -> Self {
         let name = path
             .file_name()
@@ -535,6 +748,7 @@ impl EntryMeta {
             } else {
                 Some(errors.join("; "))
             },
+            git_status: None,
         }
     }
 
@@ -552,6 +766,45 @@ impl EntryMeta {
 
     fn sort_key(&self) -> &OsString {
         &self.name
+    }
+
+    fn from_seed(seed: EntrySeed) -> Self {
+        let EntrySeed {
+            path,
+            name,
+            file_type_hint,
+            file_type_error,
+        } = seed;
+
+        let mut errors = Vec::new();
+        if let Some(err) = file_type_error {
+            errors.push(err);
+        }
+
+        let mut file_type = file_type_hint;
+        if file_type.is_none() {
+            match fs::symlink_metadata(&path) {
+                Ok(md) => file_type = Some(md.file_type()),
+                Err(err) => errors.push(err.to_string()),
+            }
+        }
+
+        let metadata = fs::metadata(&path)
+            .map_err(|err| {
+                errors.push(err.to_string());
+                err
+            })
+            .ok();
+
+        if file_type.is_none() {
+            if let Some(md) = metadata.as_ref() {
+                file_type = Some(md.file_type());
+            }
+        }
+
+        let is_symlink = file_type.map(|ft| ft.is_symlink()).unwrap_or(false);
+
+        Self::construct(path, name, file_type, metadata, is_symlink, errors)
     }
 }
 
@@ -599,6 +852,7 @@ impl Entry {
             symlink_target,
             loop_detected: meta.loop_detected,
             error: meta.error.clone(),
+            git_status: meta.git_status,
         }
     }
 }
@@ -745,6 +999,8 @@ fn run_tree_plain(
     include_glob: &Option<PatternList>,
     exclude_glob: &Option<PatternList>,
     filters: &Filters,
+    git: &GitTracker,
+    jobs: &JobPool,
 ) -> Result<()> {
     let mut out = make_encoded_writer(cli);
     let mut bold = ColorSpec::new();
@@ -753,7 +1009,8 @@ fn run_tree_plain(
     writeln!(&mut out, "{}", root.display())?;
     out.reset()?;
 
-    let root_meta = EntryMeta::from_path(root);
+    let mut root_meta = EntryMeta::from_path(root);
+    git.apply(&mut root_meta);
 
     let mut visited: HashSet<PathBuf> = HashSet::new();
     if let Some(real) = root_meta
@@ -772,11 +1029,24 @@ fn run_tree_plain(
 
     let mut stack: Vec<Frame> = Vec::new();
     let mut pending_dirs: Vec<PlainPending> = Vec::new();
-    if let Some(frame) = read_dir_frame(root, "", 1, cli, include_glob, exclude_glob, filters)? {
+    if let Some(frame) = read_dir_frame(
+        root,
+        "",
+        1,
+        cli,
+        include_glob,
+        exclude_glob,
+        filters,
+        git,
+        jobs,
+    )? {
         stack.push(frame);
     }
 
-    while let Some(frame) = stack.last_mut() {
+    let mut depth_warned = false;
+    while !stack.is_empty() {
+        let stack_len = stack.len();
+        let frame = stack.last_mut().unwrap();
         if frame.idx >= frame.entries.len() {
             stack.pop();
             if let Some(pending) = pending_dirs.pop() {
@@ -810,6 +1080,8 @@ fn run_tree_plain(
                 include_glob,
                 exclude_glob,
                 filters,
+                git,
+                jobs,
             )? {
                 Some(child_frame) => {
                     pending_dirs.push(pending_entry);
@@ -820,6 +1092,17 @@ fn run_tree_plain(
                 }
             }
         } else {
+            if !depth_warned
+                && cli.warn_depth > 0
+                && pending_dirs.len() + stack_len > cli.warn_depth
+            {
+                eprintln!(
+                    "[warn] traversal depth {} exceeded warn threshold {}",
+                    pending_dirs.len() + stack_len,
+                    cli.warn_depth
+                );
+                depth_warned = true;
+            }
             finalize_plain_entry(
                 out.as_mut(),
                 entry,
@@ -871,6 +1154,22 @@ fn write_plain_entry(
 ) -> io::Result<()> {
     let connector = if is_last { "└── " } else { "├── " };
     write!(out, "{}{}", prefix, connector)?;
+
+    if let Some(status) = entry.git_status {
+        if let Some(color) = match status {
+            'M' => Some(Color::Yellow),
+            'A' => Some(Color::Green),
+            'D' => Some(Color::Red),
+            'R' => Some(Color::Cyan),
+            _ => None,
+        } {
+            let mut spec = ColorSpec::new();
+            spec.set_fg(Some(color));
+            out.set_color(&spec)?;
+        }
+        write!(out, "[{status}] ")?;
+        out.reset()?;
+    }
 
     if let Some(size) = entry.size {
         write!(out, "[{size}] ")?;
@@ -933,6 +1232,10 @@ fn write_csv_entry<W: Write>(out: &mut W, entry: &Entry) -> io::Result<()> {
     if let Some(err) = &entry.error {
         csv_escape(out, err)?;
     }
+    write!(out, ",")?;
+    if let Some(status) = entry.git_status {
+        write!(out, "{status}")?;
+    }
     writeln!(out)?;
     Ok(())
 }
@@ -964,10 +1267,13 @@ fn run_tree_json(
     include_glob: &Option<PatternList>,
     exclude_glob: &Option<PatternList>,
     filters: &Filters,
+    git: &GitTracker,
+    jobs: &JobPool,
 ) -> Result<()> {
     let mut stdout = BufWriter::new(std::io::stdout().lock());
 
-    let root_meta = EntryMeta::from_path(root);
+    let mut root_meta = EntryMeta::from_path(root);
+    git.apply(&mut root_meta);
     let mut visited: HashSet<PathBuf> = HashSet::new();
     if let Some(real) = root_meta
         .canonical_path
@@ -1003,7 +1309,17 @@ fn run_tree_json(
     }
 
     let mut stack: Vec<Frame> = Vec::new();
-    if let Some(frame) = read_dir_frame(root, "", 1, cli, include_glob, exclude_glob, filters)? {
+    if let Some(frame) = read_dir_frame(
+        root,
+        "",
+        1,
+        cli,
+        include_glob,
+        exclude_glob,
+        filters,
+        git,
+        jobs,
+    )? {
         stack.push(frame);
     }
 
@@ -1039,6 +1355,8 @@ fn run_tree_json(
                 include_glob,
                 exclude_glob,
                 filters,
+                git,
+                jobs,
             )? {
                 stack.push(frame);
             }
@@ -1057,10 +1375,13 @@ fn run_tree_ndjson(
     include_glob: &Option<PatternList>,
     exclude_glob: &Option<PatternList>,
     filters: &Filters,
+    git: &GitTracker,
+    jobs: &JobPool,
 ) -> Result<()> {
     let mut stdout = BufWriter::new(std::io::stdout().lock());
 
-    let root_meta = EntryMeta::from_path(root);
+    let mut root_meta = EntryMeta::from_path(root);
+    git.apply(&mut root_meta);
     let mut visited: HashSet<PathBuf> = HashSet::new();
     if let Some(real) = root_meta
         .canonical_path
@@ -1082,7 +1403,17 @@ fn run_tree_ndjson(
     }
 
     let mut stack: Vec<Frame> = Vec::new();
-    if let Some(frame) = read_dir_frame(root, "", 1, cli, include_glob, exclude_glob, filters)? {
+    if let Some(frame) = read_dir_frame(
+        root,
+        "",
+        1,
+        cli,
+        include_glob,
+        exclude_glob,
+        filters,
+        git,
+        jobs,
+    )? {
         stack.push(frame);
     }
 
@@ -1119,6 +1450,8 @@ fn run_tree_ndjson(
                 include_glob,
                 exclude_glob,
                 filters,
+                git,
+                jobs,
             )? {
                 stack.push(frame);
             }
@@ -1135,14 +1468,17 @@ fn run_tree_csv(
     include_glob: &Option<PatternList>,
     exclude_glob: &Option<PatternList>,
     filters: &Filters,
+    git: &GitTracker,
+    jobs: &JobPool,
 ) -> Result<()> {
     let mut stdout = BufWriter::new(std::io::stdout().lock());
     writeln!(
         &mut stdout,
-        "name,path,depth,kind,size,mtime,perm,symlink_target,loop_detected,error"
+        "name,path,depth,kind,size,mtime,perm,symlink_target,loop_detected,error,git_status"
     )?;
 
-    let root_meta = EntryMeta::from_path(root);
+    let mut root_meta = EntryMeta::from_path(root);
+    git.apply(&mut root_meta);
     let mut visited: HashSet<PathBuf> = HashSet::new();
     if let Some(real) = root_meta
         .canonical_path
@@ -1163,13 +1499,26 @@ fn run_tree_csv(
     }
 
     let mut stack: Vec<Frame> = Vec::new();
-    if let Some(frame) = read_dir_frame(root, "", 1, cli, include_glob, exclude_glob, filters)? {
+    if let Some(frame) = read_dir_frame(
+        root,
+        "",
+        1,
+        cli,
+        include_glob,
+        exclude_glob,
+        filters,
+        git,
+        jobs,
+    )? {
         stack.push(frame);
     }
 
     while let Some(frame) = stack.last_mut() {
         if frame.idx >= frame.entries.len() {
             stack.pop();
+            if let Some(pending) = pending_dirs.pop() {
+                finalize_pending_dir(out.as_mut(), pending, &mut pending_dirs)?;
+            }
             continue;
         }
 
@@ -1199,6 +1548,8 @@ fn run_tree_csv(
                 include_glob,
                 exclude_glob,
                 filters,
+                git,
+                jobs,
             )? {
                 stack.push(frame);
             }
@@ -1215,8 +1566,11 @@ fn run_tree_yaml(
     include_glob: &Option<PatternList>,
     exclude_glob: &Option<PatternList>,
     filters: &Filters,
+    git: &GitTracker,
+    jobs: &JobPool,
 ) -> Result<()> {
-    let root_meta = EntryMeta::from_path(root);
+    let mut root_meta = EntryMeta::from_path(root);
+    git.apply(&mut root_meta);
     let mut visited: HashSet<PathBuf> = HashSet::new();
     if let Some(real) = root_meta
         .canonical_path
@@ -1239,6 +1593,8 @@ fn run_tree_yaml(
             include_glob,
             exclude_glob,
             filters,
+            git,
+            jobs,
             &mut visited,
         )?;
 
@@ -1275,6 +1631,8 @@ fn build_yaml_children(
     include_glob: &Option<PatternList>,
     exclude_glob: &Option<PatternList>,
     filters: &Filters,
+    git: &GitTracker,
+    jobs: &JobPool,
     visited: &mut HashSet<PathBuf>,
 ) -> Result<Vec<YamlNode>> {
     let mut nodes = Vec::new();
@@ -1286,6 +1644,8 @@ fn build_yaml_children(
         include_glob,
         exclude_glob,
         filters,
+        git,
+        jobs,
     )? {
         for mut meta in frame.entries.into_iter() {
             let node = build_yaml_node(
@@ -1295,6 +1655,8 @@ fn build_yaml_children(
                 include_glob,
                 exclude_glob,
                 filters,
+                git,
+                jobs,
                 visited,
             )?;
             nodes.push(node);
@@ -1311,6 +1673,8 @@ fn build_yaml_node(
     include_glob: &Option<PatternList>,
     exclude_glob: &Option<PatternList>,
     filters: &Filters,
+    git: &GitTracker,
+    jobs: &JobPool,
     visited: &mut HashSet<PathBuf>,
 ) -> Result<YamlNode> {
     let (mut entry, descend, _child_prefix) = handle_entry(meta, "", depth, true, cli, visited);
@@ -1325,6 +1689,8 @@ fn build_yaml_node(
             include_glob,
             exclude_glob,
             filters,
+            git,
+            jobs,
             visited,
         )?;
         let mut total = 0u64;
@@ -1349,8 +1715,10 @@ fn run_tree_html(
     include_glob: &Option<PatternList>,
     exclude_glob: &Option<PatternList>,
     filters: &Filters,
+    git: &GitTracker,
+    jobs: &JobPool,
 ) -> Result<()> {
-    let entries = collect_entries_flat(root, cli, include_glob, exclude_glob, filters)?;
+    let entries = collect_entries_flat(root, cli, include_glob, exclude_glob, filters, git, jobs)?;
     let json = serde_json::to_string(&entries)?;
     let escaped = escape_script_data(&json);
 
@@ -1388,8 +1756,11 @@ fn collect_entries_flat(
     include_glob: &Option<PatternList>,
     exclude_glob: &Option<PatternList>,
     filters: &Filters,
+    git: &GitTracker,
+    jobs: &JobPool,
 ) -> Result<Vec<Entry>> {
-    let root_meta = EntryMeta::from_path(root);
+    let mut root_meta = EntryMeta::from_path(root);
+    git.apply(&mut root_meta);
     let mut visited: HashSet<PathBuf> = HashSet::new();
     if let Some(real) = root_meta
         .canonical_path
@@ -1409,7 +1780,17 @@ fn collect_entries_flat(
     }
 
     let mut stack: Vec<Frame> = Vec::new();
-    if let Some(frame) = read_dir_frame(root, "", 1, cli, include_glob, exclude_glob, filters)? {
+    if let Some(frame) = read_dir_frame(
+        root,
+        "",
+        1,
+        cli,
+        include_glob,
+        exclude_glob,
+        filters,
+        git,
+        jobs,
+    )? {
         stack.push(frame);
     }
 
@@ -1443,6 +1824,8 @@ fn collect_entries_flat(
                 include_glob,
                 exclude_glob,
                 filters,
+                git,
+                jobs,
             )? {
                 stack.push(frame);
             }
@@ -1511,10 +1894,16 @@ fn write_yaml_fields<W: Write>(out: &mut W, indent: usize, node: &YamlNode) -> i
     if let Some(err) = &node.entry.error {
         yaml_write_string(out, indent, "error", err)?;
     }
+    if let Some(status) = node.entry.git_status {
+        writeln!(out, "{}git_status: {}", indent_str, status)?;
+    }
     if !node.children.is_empty() {
         writeln!(out, "{}children:", indent_str)?;
         for child in &node.children {
             write_yaml_node(out, child, indent + 2, true)?;
+        }
+        if has_sizes {
+            entry.size = Some(total);
         }
     }
     Ok(())
@@ -1551,6 +1940,8 @@ fn read_dir_frame(
     include_glob: &Option<PatternList>,
     exclude_glob: &Option<PatternList>,
     filters: &Filters,
+    git: &GitTracker,
+    jobs: &JobPool,
 ) -> Result<Option<Frame>> {
     let rd = match fs::read_dir(path) {
         Ok(r) => r,
@@ -1560,7 +1951,7 @@ fn read_dir_frame(
         }
     };
 
-    let mut entries = Vec::new();
+    let mut seeds: Vec<EntrySeed> = Vec::new();
     for e in rd {
         match e {
             Ok(de) => {
@@ -1585,16 +1976,31 @@ fn read_dir_frame(
                     continue;
                 }
 
-                let meta = EntryMeta::build(de, file_type_hint, file_type_error);
-                if !filters.allows(&meta) {
-                    continue;
-                }
-                entries.push(meta);
+                seeds.push(EntrySeed {
+                    path: fullp,
+                    name: file_name,
+                    file_type_hint,
+                    file_type_error,
+                });
             }
             Err(err) => {
                 eprintln!("[read_dir error] {}: {err}", path.display());
             }
         }
+    }
+
+    if seeds.is_empty() {
+        return Ok(None);
+    }
+
+    let metas = build_entry_metas(seeds, jobs);
+    let mut entries = Vec::new();
+    for mut meta in metas {
+        if !filters.allows(&meta) {
+            continue;
+        }
+        git.apply(&mut meta);
+        entries.push(meta);
     }
 
     if entries.is_empty() {
@@ -1618,4 +2024,37 @@ fn read_dir_frame(
         prefix: prefix.to_string(),
         depth,
     }))
+}
+
+fn build_entry_metas(seeds: Vec<EntrySeed>, jobs: &JobPool) -> Vec<EntryMeta> {
+    if seeds.is_empty() {
+        return Vec::new();
+    }
+
+    if !jobs.is_parallel() || seeds.len() <= 1 {
+        return seeds.into_iter().map(EntryMeta::from_seed).collect();
+    }
+
+    let workers = jobs.workers().min(seeds.len());
+    let chunk = (seeds.len() + workers - 1) / workers;
+    let mut results: Vec<EntryMeta> = Vec::with_capacity(seeds.len());
+
+    thread::scope(|scope| {
+        let (tx, rx) = mpsc::channel();
+        for chunk_slice in seeds.chunks(chunk.max(1)) {
+            let tx = tx.clone();
+            let chunk_vec: Vec<EntrySeed> = chunk_slice.to_vec();
+            scope.spawn(move || {
+                let metas: Vec<EntryMeta> =
+                    chunk_vec.into_iter().map(EntryMeta::from_seed).collect();
+                let _ = tx.send(metas);
+            });
+        }
+        drop(tx);
+        for mut part in rx {
+            results.append(&mut part);
+        }
+    });
+
+    results
 }

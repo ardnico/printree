@@ -74,6 +74,14 @@ pub struct Cli {
     #[arg(long, value_enum, default_value_t = GitignoreMode::Off)]
     pub gitignore: GitignoreMode,
 
+    /// Show git status markers for entries
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub git_status: bool,
+
+    /// Enable git rename detection (implies git status)
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub git_rename: bool,
+
     /// Color output
     #[arg(long, value_enum, default_value_t = ColorMode::Never)]
     pub color: ColorMode,
@@ -91,6 +99,14 @@ pub struct Cli {
         help = "Output encoding: utf8 | utf8bom | utf16le | sjis | auto"
     )]
     pub encoding: EncodingMode,
+
+    /// Number of worker jobs (1 = disabled)
+    #[arg(long, default_value_t = 1)]
+    pub jobs: usize,
+
+    /// Warn when traversal depth exceeds this threshold (0 = disable)
+    #[arg(long = "warn-depth", default_value_t = 5000)]
+    pub warn_depth: usize,
 }
 
 #[derive(Subcommand, Debug)]
