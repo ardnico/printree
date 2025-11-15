@@ -50,6 +50,22 @@ pub struct Cli {
     #[arg(long, value_enum, default_value_t = MatchMode::Name)]
     pub match_mode: MatchMode,
 
+    /// Regex filter applied after glob matching
+    #[arg(long = "filter-regex")]
+    pub filter_regex: Option<String>,
+
+    /// File size filter, e.g. ">1MB" or "<=10k"
+    #[arg(long = "filter-size")]
+    pub filter_size: Option<String>,
+
+    /// Modified-time filter window like "3d", "10m", "2h"
+    #[arg(long = "filter-mtime")]
+    pub filter_mtime: Option<String>,
+
+    /// Permission filter (octal, e.g. 755)
+    #[arg(long = "filter-perm")]
+    pub filter_perm: Option<String>,
+
     /// Type filter: file|dir|symlink (repeatable)
     #[arg(long = "type", value_enum)]
     pub types: Vec<TypeFilter>,
