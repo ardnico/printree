@@ -84,24 +84,26 @@ jobs:
       - name: Prepare package directory
         shell: bash
         run: |
-          mkdir -p dist
           BIN="printree${{ matrix.ext }}"
+          rm -rf package
+          mkdir -p dist package
+          cp target/${{ matrix.target }}/release/$BIN package/
+          cp README.adoc package/
+          cp Cargo.toml package/
           cp target/${{ matrix.target }}/release/$BIN dist/
-          cp README.adoc dist/
-          cp Cargo.toml dist/
 
       - name: Create tar.gz archive (Unix)
         if: matrix.os != 'windows-latest'
         shell: bash
         run: |
-          tar -czf printree-${{ matrix.target }}.tar.gz -C dist .
+          tar -czf printree-${{ matrix.target }}.tar.gz -C package .
           mv printree-${{ matrix.target }}.tar.gz dist/
 
       - name: Create tar.gz archive (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          tar -czf printree-${{ matrix.target }}.tar.gz -C dist .
+          tar -czf printree-${{ matrix.target }}.tar.gz -C package .
           Move-Item -Path printree-${{ matrix.target }}.tar.gz -Destination dist/
 
       # ───────────────────────────────
@@ -139,8 +141,16 @@ jobs:
         if: matrix.os != 'windows-latest'
         shell: bash
         run: |
-          cd dist
-          zip ../printree-${{ matrix.target }}.zip *
+          cd package
+          zip -r ../printree-${{ matrix.target }}.zip ./*
+          mv ../printree-${{ matrix.target }}.zip ../dist/
+          cd ..
+          rm -rf package
+
+      - name: Cleanup package directory
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: Remove-Item -Recurse -Force package -ErrorAction SilentlyContinue
       # ───────────────────────────────
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -169,6 +179,11 @@ jobs:
         with:
           tag_name: v${{ needs.version-sync.outputs.version }}
           name: "printree v${{ needs.version-sync.outputs.version }}"
-          files: dist/**/*.*
+          files: |
+            dist/**/*.tar.gz
+            dist/**/*.zip
+            dist/**/*.deb
+            dist/**/*.rpm
+            dist/**/*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
