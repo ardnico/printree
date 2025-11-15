@@ -99,6 +99,7 @@ struct EntryMeta {
     size: Option<u64>,
     mtime: Option<SystemTime>,
     perm_unix: Option<u32>,
+    #[cfg_attr(not(windows), allow(dead_code))]
     perm_win: Option<u32>,
     is_symlink: bool,
     symlink_target: Option<PathBuf>,
@@ -171,6 +172,23 @@ impl PlainPending {
 struct YamlNode {
     entry: Entry,
     children: Vec<YamlNode>,
+}
+
+fn canonical_root_for_security(root: &Path, root_meta: &EntryMeta) -> Option<PathBuf> {
+    if let Some(real) = root_meta.canonical_path.clone() {
+        Some(real)
+    } else if root.is_absolute() {
+        Some(root.to_path_buf())
+    } else {
+        env::current_dir().ok().map(|cwd| cwd.join(root))
+    }
+}
+
+fn path_within_root(path: &Path, root: &Path) -> bool {
+    if path == root {
+        return true;
+    }
+    path.starts_with(root)
 }
 
 #[derive(Clone)]
@@ -630,8 +648,6 @@ fn parse_perm_filter(spec: &str) -> Result<Option<PermFilter>> {
             expected: value & 0o777,
         }))
     }
-
-    (entry, descend, child_prefix)
 }
 
 impl EntryMeta {
@@ -808,6 +824,65 @@ impl EntryMeta {
     }
 }
 
+#[cfg(unix)]
+fn format_permissions(meta: &EntryMeta) -> Option<String> {
+    let _ = meta.perm_win;
+    meta.perm_unix.map(|perm| format!("{perm:03o}"))
+}
+
+#[cfg(windows)]
+fn format_permissions(meta: &EntryMeta) -> Option<String> {
+    if let Some(perm) = meta.perm_unix {
+        return Some(format!("{perm:03o}"));
+    }
+    meta.perm_win.map(format_windows_attributes)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn format_permissions(_meta: &EntryMeta) -> Option<String> {
+    None
+}
+
+#[cfg(windows)]
+fn format_windows_attributes(attrs: u32) -> String {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_COMPRESSED, FILE_ATTRIBUTE_DEVICE,
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_ENCRYPTED, FILE_ATTRIBUTE_HIDDEN,
+        FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, FILE_ATTRIBUTE_OFFLINE,
+        FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_SYSTEM,
+        FILE_ATTRIBUTE_TEMPORARY,
+    };
+
+    let mut parts = Vec::new();
+    let flags: &[(u32, &str)] = &[
+        (FILE_ATTRIBUTE_DIRECTORY, "DIR"),
+        (FILE_ATTRIBUTE_READONLY, "READONLY"),
+        (FILE_ATTRIBUTE_HIDDEN, "HIDDEN"),
+        (FILE_ATTRIBUTE_SYSTEM, "SYSTEM"),
+        (FILE_ATTRIBUTE_ARCHIVE, "ARCHIVE"),
+        (FILE_ATTRIBUTE_REPARSE_POINT, "REPARSE"),
+        (FILE_ATTRIBUTE_COMPRESSED, "COMPRESSED"),
+        (FILE_ATTRIBUTE_ENCRYPTED, "ENCRYPTED"),
+        (FILE_ATTRIBUTE_OFFLINE, "OFFLINE"),
+        (FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, "NOINDEX"),
+        (FILE_ATTRIBUTE_TEMPORARY, "TEMP"),
+        (FILE_ATTRIBUTE_DEVICE, "DEVICE"),
+        (FILE_ATTRIBUTE_NORMAL, "NORMAL"),
+    ];
+
+    for (mask, label) in flags {
+        if attrs & *mask != 0 {
+            parts.push(*label);
+        }
+    }
+
+    if parts.is_empty() {
+        format!("0x{attrs:08X}")
+    } else {
+        format!("{} (0x{attrs:08X})", parts.join("|"))
+    }
+}
+
 impl Entry {
     fn from_meta(meta: &EntryMeta, depth: usize) -> Self {
         let kind = if meta.is_symlink {
@@ -827,10 +902,7 @@ impl Entry {
                 .map(|d| d.as_secs().to_string())
         });
 
-        let perm = meta
-            .perm_unix
-            .map(|perm| format!("{perm:03o}"))
-            .or_else(|| meta.perm_win.map(|perm| format!("{perm:08X}")));
+        let perm = format_permissions(meta);
 
         let symlink_target = if meta.is_symlink {
             meta.symlink_target
@@ -864,10 +936,12 @@ fn handle_entry(
     is_last: bool,
     cli: &Cli,
     visited: &mut HashSet<PathBuf>,
+    root_guard: Option<&Path>,
 ) -> (Entry, bool, String) {
     let mut loop_detected = false;
     let mut descend = entry_meta.points_to_directory();
     let mut canonical_to_record: Option<PathBuf> = None;
+    let mut blocked_outside_root = false;
 
     if entry_meta.is_symlink {
         if let Some(canonical) = entry_meta.canonical_path.clone() {
@@ -895,6 +969,17 @@ fn handle_entry(
         descend = false;
     }
 
+    if let (Some(root_path), Some(candidate)) = (root_guard, canonical_to_record.as_ref()) {
+        if !path_within_root(candidate, root_path) {
+            descend = false;
+            blocked_outside_root = true;
+            canonical_to_record = None;
+            if entry_meta.error.is_none() {
+                entry_meta.error = Some(String::from("symlink target outside root"));
+            }
+        }
+    }
+
     if let Some(maxd) = cli.max_depth {
         if depth >= maxd {
             descend = false;
@@ -915,6 +1000,8 @@ fn handle_entry(
         if let Some(canonical) = canonical_to_record {
             visited.insert(canonical);
         }
+    } else if blocked_outside_root && entry_meta.is_symlink {
+        entry_meta.loop_detected = false;
     }
 
     (entry, descend, child_prefix)
@@ -1011,13 +1098,11 @@ fn run_tree_plain(
 
     let mut root_meta = EntryMeta::from_path(root);
     git.apply(&mut root_meta);
+    let root_security = canonical_root_for_security(root, &root_meta);
+    let root_guard = root_security.as_deref();
 
     let mut visited: HashSet<PathBuf> = HashSet::new();
-    if let Some(real) = root_meta
-        .canonical_path
-        .clone()
-        .or_else(|| fs::canonicalize(root).ok())
-    {
+    if let Some(real) = root_security.clone() {
         visited.insert(real);
     } else {
         visited.insert(root.to_path_buf());
@@ -1067,6 +1152,7 @@ fn run_tree_plain(
             is_last,
             cli,
             &mut visited,
+            root_guard,
         );
 
         if descend {
@@ -1274,12 +1360,10 @@ fn run_tree_json(
 
     let mut root_meta = EntryMeta::from_path(root);
     git.apply(&mut root_meta);
+    let root_security = canonical_root_for_security(root, &root_meta);
+    let root_guard = root_security.as_deref();
     let mut visited: HashSet<PathBuf> = HashSet::new();
-    if let Some(real) = root_meta
-        .canonical_path
-        .clone()
-        .or_else(|| fs::canonicalize(root).ok())
-    {
+    if let Some(real) = root_security.clone() {
         visited.insert(real);
     } else {
         visited.insert(root.to_path_buf());
@@ -1341,6 +1425,7 @@ fn run_tree_json(
             is_last,
             cli,
             &mut visited,
+            root_guard,
         );
 
         emit(&entry)?;
@@ -1382,12 +1467,10 @@ fn run_tree_ndjson(
 
     let mut root_meta = EntryMeta::from_path(root);
     git.apply(&mut root_meta);
+    let root_security = canonical_root_for_security(root, &root_meta);
+    let root_guard = root_security.as_deref();
     let mut visited: HashSet<PathBuf> = HashSet::new();
-    if let Some(real) = root_meta
-        .canonical_path
-        .clone()
-        .or_else(|| fs::canonicalize(root).ok())
-    {
+    if let Some(real) = root_security.clone() {
         visited.insert(real);
     } else {
         visited.insert(root.to_path_buf());
@@ -1435,6 +1518,7 @@ fn run_tree_ndjson(
             is_last,
             cli,
             &mut visited,
+            root_guard,
         );
 
         serde_json::to_writer(&mut stdout, &entry)?;
@@ -1479,12 +1563,10 @@ fn run_tree_csv(
 
     let mut root_meta = EntryMeta::from_path(root);
     git.apply(&mut root_meta);
+    let root_security = canonical_root_for_security(root, &root_meta);
+    let root_guard = root_security.as_deref();
     let mut visited: HashSet<PathBuf> = HashSet::new();
-    if let Some(real) = root_meta
-        .canonical_path
-        .clone()
-        .or_else(|| fs::canonicalize(root).ok())
-    {
+    if let Some(real) = root_security.clone() {
         visited.insert(real);
     } else {
         visited.insert(root.to_path_buf());
@@ -1516,11 +1598,25 @@ fn run_tree_csv(
     while let Some(frame) = stack.last_mut() {
         if frame.idx >= frame.entries.len() {
             stack.pop();
-            if let Some(pending) = pending_dirs.pop() {
-                finalize_pending_dir(out.as_mut(), pending, &mut pending_dirs)?;
-            }
             continue;
         }
+
+        let idx = frame.idx;
+        let is_last = idx + 1 == frame.entries.len();
+        let entry_meta = &mut frame.entries[idx];
+        frame.idx += 1;
+
+        let (entry, descend, child_prefix) = handle_entry(
+            entry_meta,
+            &frame.prefix,
+            frame.depth,
+            is_last,
+            cli,
+            &mut visited,
+            root_guard,
+        );
+
+        write_csv_entry(&mut stdout, &entry)?;
 
         let idx = frame.idx;
         let is_last = idx + 1 == frame.entries.len();
@@ -1571,12 +1667,10 @@ fn run_tree_yaml(
 ) -> Result<()> {
     let mut root_meta = EntryMeta::from_path(root);
     git.apply(&mut root_meta);
+    let root_security = canonical_root_for_security(root, &root_meta);
+    let root_guard = root_security.as_deref();
     let mut visited: HashSet<PathBuf> = HashSet::new();
-    if let Some(real) = root_meta
-        .canonical_path
-        .clone()
-        .or_else(|| fs::canonicalize(root).ok())
-    {
+    if let Some(real) = root_security.clone() {
         visited.insert(real);
     } else {
         visited.insert(root.to_path_buf());
@@ -1596,6 +1690,7 @@ fn run_tree_yaml(
             git,
             jobs,
             &mut visited,
+            root_guard,
         )?;
 
         let mut total = 0u64;
@@ -1634,6 +1729,7 @@ fn build_yaml_children(
     git: &GitTracker,
     jobs: &JobPool,
     visited: &mut HashSet<PathBuf>,
+    root_guard: Option<&Path>,
 ) -> Result<Vec<YamlNode>> {
     let mut nodes = Vec::new();
     if let Some(frame) = read_dir_frame(
@@ -1658,6 +1754,7 @@ fn build_yaml_children(
                 git,
                 jobs,
                 visited,
+                root_guard,
             )?;
             nodes.push(node);
         }
@@ -1676,8 +1773,10 @@ fn build_yaml_node(
     git: &GitTracker,
     jobs: &JobPool,
     visited: &mut HashSet<PathBuf>,
+    root_guard: Option<&Path>,
 ) -> Result<YamlNode> {
-    let (mut entry, descend, _child_prefix) = handle_entry(meta, "", depth, true, cli, visited);
+    let (mut entry, descend, _child_prefix) =
+        handle_entry(meta, "", depth, true, cli, visited, root_guard);
 
     let mut children = Vec::new();
     if descend {
@@ -1692,6 +1791,7 @@ fn build_yaml_node(
             git,
             jobs,
             visited,
+            root_guard,
         )?;
         let mut total = 0u64;
         let mut has_sizes = false;
@@ -1761,12 +1861,10 @@ fn collect_entries_flat(
 ) -> Result<Vec<Entry>> {
     let mut root_meta = EntryMeta::from_path(root);
     git.apply(&mut root_meta);
+    let root_security = canonical_root_for_security(root, &root_meta);
+    let root_guard = root_security.as_deref();
     let mut visited: HashSet<PathBuf> = HashSet::new();
-    if let Some(real) = root_meta
-        .canonical_path
-        .clone()
-        .or_else(|| fs::canonicalize(root).ok())
-    {
+    if let Some(real) = root_security.clone() {
         visited.insert(real);
     } else {
         visited.insert(root.to_path_buf());
@@ -1812,6 +1910,7 @@ fn collect_entries_flat(
             is_last,
             cli,
             &mut visited,
+            root_guard,
         );
 
         if descend {
@@ -1901,9 +2000,6 @@ fn write_yaml_fields<W: Write>(out: &mut W, indent: usize, node: &YamlNode) -> i
         writeln!(out, "{}children:", indent_str)?;
         for child in &node.children {
             write_yaml_node(out, child, indent + 2, true)?;
-        }
-        if has_sizes {
-            entry.size = Some(total);
         }
     }
     Ok(())
