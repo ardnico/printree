@@ -1618,6 +1618,22 @@ fn run_tree_csv(
 
         write_csv_entry(&mut stdout, &entry)?;
 
+        let idx = frame.idx;
+        let is_last = idx + 1 == frame.entries.len();
+        let entry_meta = &mut frame.entries[idx];
+        frame.idx += 1;
+
+        let (entry, descend, child_prefix) = handle_entry(
+            entry_meta,
+            &frame.prefix,
+            frame.depth,
+            is_last,
+            cli,
+            &mut visited,
+        );
+
+        write_csv_entry(&mut stdout, &entry)?;
+
         if descend {
             let child_path = entry_meta.path.clone();
             if let Some(frame) = read_dir_frame(
