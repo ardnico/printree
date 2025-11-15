@@ -24,8 +24,10 @@ printree --help
 === ツリー出力
 [source,bash]
 ----
-printree [PATH] [OPTIONS]
+printree [OPTIONS] [PATH]
 ----
+
+NOTE: PATH を省略するとカレントディレクトリを対象にします。オプションは前後どちらに配置しても構いません。
 
 主なオプション:
 
