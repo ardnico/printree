@@ -125,11 +125,13 @@ jobs:
       - name: Build Windows installer
         if: matrix.os == 'windows-latest'
         shell: pwsh
+        env:
+          APP_VERSION: ${{ needs.version-sync.outputs.version }}
         run: |
           choco install --no-progress innosetup
           Copy-Item installer\printree.iss .
-          iscc /DMyAppVersion=${{ needs.version-sync.outputs.version }} printree.iss
-          Move-Item -Path Output\printree_setup.exe -Destination dist\printree_installer_${{ needs.version-sync.outputs.version }}.exe
+          iscc /DMyAppVersion=$env:APP_VERSION printree.iss
+          Move-Item -Path Output\printree_setup.exe -Destination "dist\printree_installer_$env:APP_VERSION.exe"
 
       # ───────────────────────────────
       # macOS: zip
