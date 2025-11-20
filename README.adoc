@@ -90,6 +90,21 @@ printree diff --rev-a <HASH|REF> --rev-b <HASH|REF> [--path SUBDIR] [--format pl
 - `--include/--exclude` や `--pattern-syntax` はツリー表示と同じく利用可能。
 - 出力形式は `plain` または `json`。その他のフォーマットを指定するとエラーになります。
 
+== 開発・テスト
+
+- `cargo test` でユニットテストを実行します。
+- CLI の挙動確認は `tests/run_all.sh` を使うと、リリースビルドを一度だけ生成して smoke/diff/tree スクリプトをまとめて実行できます。
+
+[source,bash]
+----
+./tests/run_all.sh
+----
+
+== リリースフロー
+
+- main ブランチに `Cargo.toml` を含む変更をプッシュすると `Build, Package & Release printree` ワークフローが走り、未作成なら `v<version>` タグを打ったうえで GitHub Release に成果物をアップロードします。
+- 配布物は `dist/` に集約され、`tar.gz`/`zip`/`deb`/`rpm`/`exe` といった配布専用ファイルのみをアップロード対象にして README や Cargo.toml を単独で再投稿しないようにしています。アーカイブ内には README.adoc と LICENSE のみを同梱し、余計なソースメタデータは含めません。
+
 == パフォーマンスとアーキテクチャ
 - 逐次 DFS で探索順序は安定化済みソート後に固定。
 - 各エントリのメタデータは 1 回だけ取得してキャッシュし、再利用します。

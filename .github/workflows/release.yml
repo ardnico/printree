@@ -89,7 +89,7 @@ jobs:
           mkdir -p dist package
           cp target/${{ matrix.target }}/release/$BIN package/
           cp README.adoc package/
-          cp Cargo.toml package/
+          cp LICENSE package/
           cp target/${{ matrix.target }}/release/$BIN dist/
 
       - name: Create tar.gz archive (Unix)
