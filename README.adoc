@@ -37,21 +37,21 @@ NOTE: PATH を省略するとカレントディレクトリを対象にします
 | `--max-depth <N>` | 探索の最大深さ。`1` はルートのみ。
 | `--hidden` | ドットファイルも表示。
 | `--follow-symlinks` | シンボリックリンクを辿る（ルート外へ抜けるリンクは遮断）。
-| `--sort name|none` | 名前順ソート。`--dirs-first` と組み合わせ可。
+| `--sort name\|none` | 名前順ソート。`--dirs-first` と組み合わせ可。
 | `--include/--exclude <PATTERN>` | パターンで絞り込み。複数指定可。
-| `--pattern-syntax glob|regex` | include/exclude の構文を選択。
-| `--match-mode name|path` | パターンをファイル名/パスのどちらに適用するか。
+| `--pattern-syntax glob\|regex` | include/exclude の構文を選択。
+| `--match-mode name\|path` | パターンをファイル名/パスのどちらに適用するか。
 | `--filter-regex <REGEX>` | 正規表現で追加フィルタリング。
 | `--filter-size <COND>` | `>1MB`, `<=10k`, `==0` などのサイズ条件。
 | `--filter-mtime <WINDOW>` | `3d`, `10m`, `2h` といった更新時刻ウィンドウ。
 | `--filter-perm <OCTAL>` | UNIX パーミッション（例 `755`）。Windows では警告のみ。
-| `--type file|dir|symlink` | 表示する種類を限定（複数指定で合成）。
-| `--gitignore on|off` | `.gitignore` を適用するか。`off` が既定。
+| `--type file\|dir\|symlink` | 表示する種類を限定（複数指定で合成）。
+| `--gitignore on\|off` | `.gitignore` を適用するか。`off` が既定。
 | `--git-status` | Git の変更状態を表示。
 | `--git-rename` | Git リネーム検出を有効化（コスト増。`--git-status` を暗黙有効化）。
-| `--color auto|always|never` | カラー出力の制御。
-| `--format plain|json|ndjson|csv|yaml|html` | 出力形式。plain/ndjson/csv は逐次書き出し。
-| `--encoding utf8|utf8bom|utf16le|sjis|auto` | 文字エンコーディング。
+| `--color auto\|always\|never` | カラー出力の制御。
+| `--format plain\|json\|ndjson\|csv\|yaml\|html` | 出力形式。plain/ndjson/csv は逐次書き出し。
+| `--encoding utf8\|utf8bom\|utf16le\|sjis\|auto` | 文字エンコーディング。
 | `--jobs <N>` | メタデータ取得を N 並列で実行。`1` でシングルスレッド。
 | `--warn-depth <N>` | 深さが N を超えたら STDERR に警告（`0` で無効）。
 |===
