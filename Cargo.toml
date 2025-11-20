@@ -14,7 +14,7 @@ priority = "optional"
 copyright = "2024 printree contributors"
 license-file = ["LICENSE", "0"]
 assets = [
-    ["target/x86_64-unknown-linux-gnu/release/printree", "usr/bin/printree", "755"],
+    ["target/release/printree", "usr/bin/printree", "755"],
     ["README.adoc", "usr/share/doc/printree/README.adoc", "644"],
     ["LICENSE", "usr/share/doc/printree/LICENSE", "644"],
 ]
@@ -23,7 +23,7 @@ assets = [
 summary = "CLI to print directory trees with encoding-aware previews"
 license = "Apache-2.0"
 assets = [
-    { source = "target/x86_64-unknown-linux-gnu/release/printree", dest = "/usr/bin/printree", mode = "755" },
+    { source = "target/release/printree", dest = "/usr/bin/printree", mode = "755" },
     { source = "README.adoc", dest = "/usr/share/doc/printree/README.adoc", mode = "644" },
     { source = "LICENSE", dest = "/usr/share/licenses/printree/LICENSE", mode = "644" },
 ]
