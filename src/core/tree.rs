@@ -87,6 +87,15 @@ pub fn run_tree(cli: &Cli) -> Result<()> {
             &git,
             &jobs,
         ),
+        Format::Toon => run_tree_toon(
+            &root,
+            cli,
+            &include_glob,
+            &exclude_glob,
+            &filters,
+            &git,
+            &jobs,
+        ),
     }
 }
 
@@ -1465,6 +1474,131 @@ fn run_tree_json(
     write!(&mut stdout, "]\n")?;
     stdout.flush()?;
     Ok(())
+}
+
+fn run_tree_toon(
+    root: &Path,
+    cli: &Cli,
+    include_glob: &Option<PatternList>,
+    exclude_glob: &Option<PatternList>,
+    filters: &Filters,
+    git: &GitTracker,
+    jobs: &JobPool,
+) -> Result<()> {
+    let mut out = make_encoded_writer(cli);
+    writeln!(&mut out, "{}", root.display())?;
+
+    let mut root_meta = EntryMeta::from_path(root);
+    git.apply(&mut root_meta);
+    let root_security = canonical_root_for_security(root, &root_meta);
+    let root_guard = root_security.as_deref();
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    if let Some(real) = root_security.clone() {
+        visited.insert(real);
+    } else {
+        visited.insert(root.to_path_buf());
+    }
+
+    if !root_meta.points_to_directory() || matches!(cli.max_depth, Some(1)) {
+        out.flush()?;
+        return Ok(());
+    }
+
+    let mut stack: Vec<Frame> = Vec::new();
+    if let Some(frame) = read_dir_frame(
+        root,
+        "",
+        1,
+        cli,
+        include_glob,
+        exclude_glob,
+        filters,
+        git,
+        jobs,
+    )? {
+        stack.push(frame);
+    }
+
+    while let Some(frame) = stack.last_mut() {
+        if frame.idx >= frame.entries.len() {
+            stack.pop();
+            continue;
+        }
+
+        let idx = frame.idx;
+        let is_last = idx + 1 == frame.entries.len();
+        let entry_meta = &mut frame.entries[idx];
+        frame.idx += 1;
+
+        let (entry, descend, child_prefix) = handle_entry_with_guard(
+            entry_meta,
+            &frame.prefix,
+            frame.depth,
+            is_last,
+            cli,
+            &mut visited,
+            root_guard,
+        );
+
+        write_toon_entry(out.as_mut(), &frame.prefix, &entry, is_last)?;
+
+        if descend {
+            let child_path = entry_meta.path.clone();
+            if let Some(frame) = read_dir_frame(
+                &child_path,
+                &child_prefix,
+                frame.depth + 1,
+                cli,
+                include_glob,
+                exclude_glob,
+                filters,
+                git,
+                jobs,
+            )? {
+                stack.push(frame);
+            }
+        }
+    }
+
+    out.flush()?;
+    Ok(())
+}
+
+fn write_toon_entry(
+    out: &mut dyn Write,
+    prefix: &str,
+    entry: &Entry,
+    is_last: bool,
+) -> io::Result<()> {
+    let connector = if is_last { "└── " } else { "├── " };
+    write!(out, "{}{}", prefix, connector)?;
+
+    if let Some(status) = entry.git_status {
+        write!(out, "[{status}] ")?;
+    }
+
+    let icon = match entry.kind {
+        EntryKind::Dir => "📁",
+        EntryKind::Symlink => "🔗",
+        EntryKind::File => "📄",
+        EntryKind::Unknown => "❔",
+    };
+    write!(out, "{} {}", icon, entry.name)?;
+
+    if let Some(target) = &entry.symlink_target {
+        write!(out, " -> {}", target)?;
+    }
+    if let Some(size) = entry.size {
+        write!(out, " [size={size}]")?;
+    }
+    if entry.loop_detected {
+        write!(out, " [loop detected]")?;
+    }
+    if let Some(error) = &entry.error {
+        write!(out, " [error: {}]", error)?;
+    }
+
+    writeln!(out)
 }
 
 fn run_tree_ndjson(
