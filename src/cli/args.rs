@@ -181,4 +181,5 @@ pub enum Format {
     Csv,
     Yaml,
     Html,
+    Toon,
 }

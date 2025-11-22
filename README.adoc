@@ -50,7 +50,7 @@ NOTE: PATH を省略するとカレントディレクトリを対象にします
 | `--git-status` | Git の変更状態を表示。
 | `--git-rename` | Git リネーム検出を有効化（コスト増。`--git-status` を暗黙有効化）。
 | `--color auto\|always\|never` | カラー出力の制御。
-| `--format plain\|json\|ndjson\|csv\|yaml\|html` | 出力形式。plain/ndjson/csv は逐次書き出し。
+| `--format plain\|json\|ndjson\|csv\|yaml\|html\|toon` | 出力形式。plain/ndjson/csv は逐次書き出し。
 | `--encoding utf8\|utf8bom\|utf16le\|sjis\|auto` | 文字エンコーディング。
 | `--jobs <N>` | メタデータ取得を N 並列で実行。`1` でシングルスレッド。
 | `--warn-depth <N>` | 深さが N を超えたら STDERR に警告（`0` で無効）。
@@ -66,6 +66,18 @@ NOTE: すべてのフィルタは AND 条件です。正規表現や数値条件
 - `csv`: `path`,`name`,`kind`,`size`,`mtime` などの列を CSV で逐次出力。
 - `yaml`: 完全なネスト構造を保持。全エントリを一旦収集してから出力。
 - `html`: JSON を埋め込んだ単一 HTML ドキュメントを生成。
+- `toon`: TOON(Token-Oriented Object Notation) 互換の表形式。`entries[<len>]{path,...}:` のヘッダで列名を一度だけ宣言し、各行をカンマ区切りで出力してトークン数を圧縮。
+
+例:
+
+[source,text]
+----
+root:.
+entries[3]{path,depth,kind,size,mtime,perm,symlink_target,loop_detected,error,git_status}:
+.,0,dir,-,-,-,-,0,-,-
+src,1,dir,-,-,-,-,0,-,-
+src/main.rs,2,file,120,-,rw-r--r--,-,0,-,-
+----
 
 ==== Git 連携
 

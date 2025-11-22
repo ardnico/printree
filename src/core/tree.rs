@@ -87,6 +87,15 @@ pub fn run_tree(cli: &Cli) -> Result<()> {
             &git,
             &jobs,
         ),
+        Format::Toon => run_tree_toon(
+            &root,
+            cli,
+            &include_glob,
+            &exclude_glob,
+            &filters,
+            &git,
+            &jobs,
+        ),
     }
 }
 
@@ -1465,6 +1474,164 @@ fn run_tree_json(
     write!(&mut stdout, "]\n")?;
     stdout.flush()?;
     Ok(())
+}
+
+fn run_tree_toon(
+    root: &Path,
+    cli: &Cli,
+    include_glob: &Option<PatternList>,
+    exclude_glob: &Option<PatternList>,
+    filters: &Filters,
+    git: &GitTracker,
+    jobs: &JobPool,
+) -> Result<()> {
+    let mut root_meta = EntryMeta::from_path(root);
+    git.apply(&mut root_meta);
+    let root_security = canonical_root_for_security(root, &root_meta);
+    let root_guard = root_security.as_deref();
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    if let Some(real) = root_security.clone() {
+        visited.insert(real);
+    } else {
+        visited.insert(root.to_path_buf());
+    }
+
+    let mut entries = Vec::new();
+    entries.push(Entry::from_meta(&root_meta, 0));
+
+    if root_meta.points_to_directory() && !matches!(cli.max_depth, Some(1)) {
+        let mut stack: Vec<Frame> = Vec::new();
+        if let Some(frame) = read_dir_frame(
+            root,
+            "",
+            1,
+            cli,
+            include_glob,
+            exclude_glob,
+            filters,
+            git,
+            jobs,
+        )? {
+            stack.push(frame);
+        }
+
+        while let Some(frame) = stack.last_mut() {
+            if frame.idx >= frame.entries.len() {
+                stack.pop();
+                continue;
+            }
+
+            let idx = frame.idx;
+            let is_last = idx + 1 == frame.entries.len();
+            let entry_meta = &mut frame.entries[idx];
+            frame.idx += 1;
+
+            let (entry, descend, child_prefix) = handle_entry_with_guard(
+                entry_meta,
+                &frame.prefix,
+                frame.depth,
+                is_last,
+                cli,
+                &mut visited,
+                root_guard,
+            );
+
+            entries.push(entry.clone());
+
+            if descend {
+                let child_path = entry_meta.path.clone();
+                if let Some(frame) = read_dir_frame(
+                    &child_path,
+                    &child_prefix,
+                    frame.depth + 1,
+                    cli,
+                    include_glob,
+                    exclude_glob,
+                    filters,
+                    git,
+                    jobs,
+                )? {
+                    stack.push(frame);
+                }
+            }
+        }
+    }
+
+    let mut out = make_encoded_writer(cli);
+    let rel_root = root_security.as_deref().unwrap_or(root);
+    write_toon_dataset(out.as_mut(), rel_root, &entries)?;
+    out.flush()?;
+    Ok(())
+}
+
+fn write_toon_dataset(out: &mut dyn Write, root: &Path, entries: &[Entry]) -> io::Result<()> {
+    writeln!(out, "root:{}", root.display())?;
+    writeln!(
+        out,
+        "entries[{}]{{path,depth,kind,size,mtime,perm,symlink_target,loop_detected,error,git_status}}:",
+        entries.len()
+    )?;
+
+    for entry in entries {
+        let path = toon_rel_path(root, &entry.path);
+        let depth = entry.depth.to_string();
+        let size = entry.size.map(|s| s.to_string());
+        let kind = match entry.kind {
+            EntryKind::Dir => "dir",
+            EntryKind::File => "file",
+            EntryKind::Symlink => "symlink",
+            EntryKind::Unknown => "unknown",
+        };
+        let loop_flag = if entry.loop_detected { "1" } else { "0" };
+        let git_status = entry.git_status.map(|c| c.to_string());
+
+        let fields = [
+            Some(path.as_str()),
+            Some(depth.as_str()),
+            Some(kind),
+            size.as_deref(),
+            entry.mtime.as_deref(),
+            entry.perm.as_deref(),
+            entry.symlink_target.as_deref(),
+            Some(loop_flag),
+            entry.error.as_deref(),
+            git_status.as_deref(),
+        ];
+
+        let encoded: Vec<String> = fields.iter().map(|f| encode_toon_value(*f)).collect();
+        writeln!(out, "{}", encoded.join(","))?;
+    }
+
+    Ok(())
+}
+
+fn toon_rel_path(root: &Path, path: &str) -> String {
+    let full = PathBuf::from(path);
+    if let Ok(stripped) = full.strip_prefix(root) {
+        let rel = stripped.display().to_string();
+        if rel.is_empty() {
+            String::from(".")
+        } else {
+            rel
+        }
+    } else {
+        path.to_string()
+    }
+}
+
+fn encode_toon_value(value: Option<&str>) -> String {
+    match value {
+        Some(v) if v.is_empty() => String::from(""),
+        Some(v) => {
+            let needs_quote = v.chars().any(|c| matches!(c, ',' | '\\' | '\n' | '\r'));
+            if needs_quote {
+                serde_json::to_string(v).unwrap_or_else(|_| format!("\"{}\"", v))
+            } else {
+                v.to_string()
+            }
+        }
+        None => String::from("-"),
+    }
 }
 
 fn run_tree_ndjson(

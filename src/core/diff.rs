@@ -64,7 +64,7 @@ pub fn run_diff(rev_a: &str, rev_b: &str, subpath: Option<&Path>, format: Format
             }
             stdout.flush()?;
         }
-        Format::Ndjson | Format::Csv | Format::Yaml | Format::Html => {
+        Format::Ndjson | Format::Csv | Format::Yaml | Format::Html | Format::Toon => {
             bail!("format {:?} not supported for diff", format)
         }
     }
