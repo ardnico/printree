@@ -11,7 +11,8 @@ The v2 effort aims to deliver verifiable performance and stable on-disk contract
 - [x] (2025-11-25 15:08Z) Drafted the ExecPlan capturing Deliverable #1 priorities and wiring it to the repository context.
 - [x] (2025-11-25 15:40Z) Implemented the synthetic tree generator CLI (`printree-bench gen`) with scale controls, symlink storms, hidden files, sparse random sizes, and mtime variance.
 - [x] (2025-11-25 15:40Z) Added a benchmark runner stub (`printree-bench run`) that writes a structured JSON report to preserve the future metrics contract.
-- [ ] (2025-11-25 15:40Z) Document validation steps and expected outputs once the harness produces observable artifacts.
+- [x] (2025-11-26 09:15Z) Promoted the benchmark runner from a stub to a real traversal case that reports wall time and entry counts while validating the presence of the generated tree root.
+- [ ] (2025-11-26 09:15Z) Capture example benchmark outputs and CI wiring notes once additional cases land.
 
 ## Surprises & Discoveries
 

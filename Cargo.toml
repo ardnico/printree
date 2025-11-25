@@ -43,6 +43,7 @@ serde_json = "1"
 rand = { version = "0.8", features = ["std", "small_rng"] }
 filetime = "0.2"
 chrono = { version = "0.4", features = ["clock", "serde"] }
+walkdir = "2"
 
 [dev-dependencies]
 tempfile = "3"

@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
@@ -11,6 +11,7 @@ use filetime::{set_file_times, FileTime};
 use rand::prelude::*;
 use rand::SeedableRng;
 use serde::Serialize;
+use walkdir::WalkDir;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -70,14 +71,31 @@ struct RunArgs {
     /// Output path for JSON report
     #[arg(long)]
     out: Option<PathBuf>,
+
+    /// Root directory containing the generated tree
+    #[arg(long)]
+    root: Option<PathBuf>,
 }
 
 #[derive(Serialize)]
 struct BenchReport {
     status: String,
-    note: String,
-    cases: String,
+    root: String,
     timestamp: String,
+    cases: Vec<CaseResult>,
+}
+
+#[derive(Serialize)]
+struct CaseResult {
+    name: String,
+    status: String,
+    wall_time_ms: u128,
+    entries: usize,
+    files: usize,
+    dirs: usize,
+    symlinks: usize,
+    errors: usize,
+    note: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -118,7 +136,6 @@ fn run_gen(args: &GenArgs) -> Result<()> {
     };
 
     let mut created_dirs: HashSet<PathBuf> = HashSet::new();
-    created_dirs.insert(root.to_path_buf());
     created_dirs.insert(root.clone());
     let mut files: Vec<PathBuf> = Vec::with_capacity(args.files);
 
@@ -156,13 +173,34 @@ fn run_run(args: &RunArgs) -> Result<()> {
         .out
         .clone()
         .unwrap_or_else(|| PathBuf::from("bench.json"));
+    let root = args
+        .root
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("./bench-data/gen"));
+    if !root.exists() {
+        bail!("benchmark root {} does not exist", root.display());
+    }
+
+    let case_names = parse_cases(&args.cases)?;
+    let mut results = Vec::new();
+    for name in case_names {
+        match name.as_str() {
+            "traversal" => results.push(run_traversal_case(&root)?),
+            other => bail!("unsupported benchmark case: {}", other),
+        }
+    }
+
+    let overall_status = if results.iter().all(|c| c.status == "ok") {
+        "ok"
+    } else {
+        "partial"
+    };
     let now = Utc::now().to_rfc3339();
     let report = BenchReport {
-        status: "stub".to_string(),
-        note: "Benchmark runner wiring is pending; this stub preserves the CLI and JSON contract."
-            .to_string(),
-        cases: args.cases.clone(),
+        status: overall_status.to_string(),
+        root: root.display().to_string(),
         timestamp: now,
+        cases: results,
     };
 
     let json = serde_json::to_string_pretty(&report)?;
@@ -170,6 +208,73 @@ fn run_run(args: &RunArgs) -> Result<()> {
         File::create(&out).with_context(|| format!("creating report {}", out.display()))?;
     file.write_all(json.as_bytes())?;
     Ok(())
+}
+
+fn parse_cases(cases: &str) -> Result<Vec<String>> {
+    if cases.trim() == "all" {
+        return Ok(vec!["traversal".to_string()]);
+    }
+
+    let parsed: Vec<String> = cases
+        .split(',')
+        .map(|c| c.trim())
+        .filter(|c| !c.is_empty())
+        .map(|c| c.to_string())
+        .collect();
+
+    if parsed.is_empty() {
+        bail!("no benchmark cases provided");
+    }
+    Ok(parsed)
+}
+
+fn run_traversal_case(root: &Path) -> Result<CaseResult> {
+    let start = Instant::now();
+    let mut entries = 0usize;
+    let mut files = 0usize;
+    let mut dirs = 0usize;
+    let mut symlinks = 0usize;
+    let mut errors = 0usize;
+
+    for entry in WalkDir::new(root).follow_links(false) {
+        match entry {
+            Ok(e) => {
+                entries += 1;
+                let ft = e.file_type();
+                if ft.is_dir() {
+                    dirs += 1;
+                } else if ft.is_symlink() {
+                    symlinks += 1;
+                } else {
+                    files += 1;
+                }
+            }
+            Err(err) => {
+                errors += 1;
+                eprintln!("walk error: {err}");
+            }
+        }
+    }
+
+    let wall_time = start.elapsed().as_millis();
+    let status = if errors == 0 { "ok" } else { "partial" };
+    let note = if errors == 0 {
+        None
+    } else {
+        Some(format!("encountered {} traversal errors", errors))
+    };
+
+    Ok(CaseResult {
+        name: "traversal".to_string(),
+        status: status.to_string(),
+        wall_time_ms: wall_time,
+        entries,
+        files,
+        dirs,
+        symlinks,
+        errors,
+        note,
+    })
 }
 
 fn ensure_dir_for_depth(
