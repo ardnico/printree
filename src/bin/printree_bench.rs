@@ -13,6 +13,12 @@ use rand::SeedableRng;
 use serde::Serialize;
 use walkdir::WalkDir;
 
+#[cfg(unix)]
+type RusageSnapshot = libc::rusage;
+
+#[cfg(not(unix))]
+type RusageSnapshot = ();
+
 #[derive(Parser, Debug)]
 #[command(
     name = "printree-bench",
@@ -96,6 +102,25 @@ struct CaseResult {
     symlinks: usize,
     errors: usize,
     note: Option<String>,
+    resources: ResourceUsage,
+}
+
+#[derive(Serialize, Default)]
+struct ResourceUsage {
+    /// Delta of maximum resident set size in kilobytes, where supported.
+    max_rss_kb: Option<i64>,
+    /// Delta of minor page faults (no I/O), where supported.
+    minor_faults: Option<i64>,
+    /// Delta of major page faults (with I/O), where supported.
+    major_faults: Option<i64>,
+    /// Delta of input blocks (from block reads), where supported.
+    in_block_ops: Option<i64>,
+    /// Delta of output blocks (to block writes), where supported.
+    out_block_ops: Option<i64>,
+    /// Delta of voluntary context switches, where supported.
+    voluntary_ctxt: Option<i64>,
+    /// Delta of involuntary context switches, where supported.
+    involuntary_ctxt: Option<i64>,
 }
 
 fn main() -> Result<()> {
@@ -229,6 +254,7 @@ fn parse_cases(cases: &str) -> Result<Vec<String>> {
 }
 
 fn run_traversal_case(root: &Path) -> Result<CaseResult> {
+    let usage_before = take_rusage();
     let start = Instant::now();
     let mut entries = 0usize;
     let mut files = 0usize;
@@ -257,6 +283,8 @@ fn run_traversal_case(root: &Path) -> Result<CaseResult> {
     }
 
     let wall_time = start.elapsed().as_millis();
+    let usage_after = take_rusage();
+    let resources = resource_usage_delta(usage_before, usage_after);
     let status = if errors == 0 { "ok" } else { "partial" };
     let note = if errors == 0 {
         None
@@ -274,7 +302,59 @@ fn run_traversal_case(root: &Path) -> Result<CaseResult> {
         symlinks,
         errors,
         note,
+        resources,
     })
+}
+
+#[cfg(unix)]
+fn take_rusage() -> Option<RusageSnapshot> {
+    use std::mem::MaybeUninit;
+
+    let mut usage = MaybeUninit::<libc::rusage>::uninit();
+    let ret = unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) };
+    if ret == 0 {
+        Some(unsafe { usage.assume_init() })
+    } else {
+        None
+    }
+}
+
+#[cfg(not(unix))]
+fn take_rusage() -> Option<RusageSnapshot> {
+    None
+}
+
+#[cfg(unix)]
+fn resource_usage_delta(
+    start: Option<RusageSnapshot>,
+    end: Option<RusageSnapshot>,
+) -> ResourceUsage {
+    fn delta<F>(start: &RusageSnapshot, end: &RusageSnapshot, f: F) -> i64
+    where
+        F: Fn(&RusageSnapshot) -> i64,
+    {
+        let s = f(start);
+        let e = f(end);
+        e.saturating_sub(s)
+    }
+
+    match (start, end) {
+        (Some(s), Some(e)) => ResourceUsage {
+            max_rss_kb: Some(delta(&s, &e, |u| u.ru_maxrss as i64)),
+            minor_faults: Some(delta(&s, &e, |u| u.ru_minflt as i64)),
+            major_faults: Some(delta(&s, &e, |u| u.ru_majflt as i64)),
+            in_block_ops: Some(delta(&s, &e, |u| u.ru_inblock as i64)),
+            out_block_ops: Some(delta(&s, &e, |u| u.ru_oublock as i64)),
+            voluntary_ctxt: Some(delta(&s, &e, |u| u.ru_nvcsw as i64)),
+            involuntary_ctxt: Some(delta(&s, &e, |u| u.ru_nivcsw as i64)),
+        },
+        _ => ResourceUsage::default(),
+    }
+}
+
+#[cfg(not(unix))]
+fn resource_usage_delta(_: Option<RusageSnapshot>, _: Option<RusageSnapshot>) -> ResourceUsage {
+    ResourceUsage::default()
 }
 
 fn ensure_dir_for_depth(
