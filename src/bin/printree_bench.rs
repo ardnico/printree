@@ -13,11 +13,45 @@ use rand::SeedableRng;
 use serde::Serialize;
 use walkdir::WalkDir;
 
+#[cfg(all(unix, not(target_os = "macos")))]
+use jemallocator::Jemalloc;
+
+#[cfg(all(unix, not(target_os = "macos")))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 #[cfg(unix)]
 type RusageSnapshot = libc::rusage;
 
 #[cfg(not(unix))]
 type RusageSnapshot = ();
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+struct IoSnapshot {
+    read_syscalls: u64,
+    write_syscalls: u64,
+    read_bytes: u64,
+    write_bytes: u64,
+    read_chars: u64,
+    write_chars: u64,
+}
+
+#[cfg(not(target_os = "linux"))]
+#[derive(Clone, Copy)]
+struct IoSnapshot;
+
+#[cfg(all(unix, not(target_os = "macos")))]
+#[derive(Clone, Copy)]
+struct AllocationSnapshot {
+    allocated: u64,
+    active: u64,
+    resident: u64,
+}
+
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+#[derive(Clone, Copy)]
+struct AllocationSnapshot;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -121,6 +155,24 @@ struct ResourceUsage {
     voluntary_ctxt: Option<i64>,
     /// Delta of involuntary context switches, where supported.
     involuntary_ctxt: Option<i64>,
+    /// Delta of read syscalls, where supported (Linux `/proc/self/io`).
+    read_syscalls: Option<i64>,
+    /// Delta of write syscalls, where supported (Linux `/proc/self/io`).
+    write_syscalls: Option<i64>,
+    /// Delta of bytes the kernel attempted to read from storage.
+    read_bytes: Option<i64>,
+    /// Delta of bytes the kernel attempted to write to storage.
+    write_bytes: Option<i64>,
+    /// Delta of raw read chars as reported by `/proc/self/io`.
+    read_chars: Option<i64>,
+    /// Delta of raw write chars as reported by `/proc/self/io`.
+    write_chars: Option<i64>,
+    /// Delta of jemalloc-reported allocated bytes (requires jemalloc allocator).
+    allocated_bytes: Option<i64>,
+    /// Delta of jemalloc-reported active bytes (requires jemalloc allocator).
+    active_bytes: Option<i64>,
+    /// Delta of jemalloc resident bytes (requires jemalloc allocator).
+    resident_bytes: Option<i64>,
 }
 
 fn main() -> Result<()> {
@@ -255,6 +307,8 @@ fn parse_cases(cases: &str) -> Result<Vec<String>> {
 
 fn run_traversal_case(root: &Path) -> Result<CaseResult> {
     let usage_before = take_rusage();
+    let io_before = take_io_snapshot();
+    let alloc_before = take_alloc_snapshot();
     let start = Instant::now();
     let mut entries = 0usize;
     let mut files = 0usize;
@@ -284,7 +338,16 @@ fn run_traversal_case(root: &Path) -> Result<CaseResult> {
 
     let wall_time = start.elapsed().as_millis();
     let usage_after = take_rusage();
-    let resources = resource_usage_delta(usage_before, usage_after);
+    let io_after = take_io_snapshot();
+    let alloc_after = take_alloc_snapshot();
+    let resources = resource_usage_delta(
+        usage_before,
+        usage_after,
+        io_before,
+        io_after,
+        alloc_before,
+        alloc_after,
+    );
     let status = if errors == 0 { "ok" } else { "partial" };
     let note = if errors == 0 {
         None
@@ -328,6 +391,10 @@ fn take_rusage() -> Option<RusageSnapshot> {
 fn resource_usage_delta(
     start: Option<RusageSnapshot>,
     end: Option<RusageSnapshot>,
+    io_start: Option<IoSnapshot>,
+    io_end: Option<IoSnapshot>,
+    alloc_start: Option<AllocationSnapshot>,
+    alloc_end: Option<AllocationSnapshot>,
 ) -> ResourceUsage {
     fn delta<F>(start: &RusageSnapshot, end: &RusageSnapshot, f: F) -> i64
     where
@@ -338,7 +405,7 @@ fn resource_usage_delta(
         e.saturating_sub(s)
     }
 
-    match (start, end) {
+    let base = match (start, end) {
         (Some(s), Some(e)) => ResourceUsage {
             max_rss_kb: Some(delta(&s, &e, |u| u.ru_maxrss as i64)),
             minor_faults: Some(delta(&s, &e, |u| u.ru_minflt as i64)),
@@ -347,14 +414,117 @@ fn resource_usage_delta(
             out_block_ops: Some(delta(&s, &e, |u| u.ru_oublock as i64)),
             voluntary_ctxt: Some(delta(&s, &e, |u| u.ru_nvcsw as i64)),
             involuntary_ctxt: Some(delta(&s, &e, |u| u.ru_nivcsw as i64)),
+            ..ResourceUsage::default()
         },
         _ => ResourceUsage::default(),
-    }
+    };
+
+    let with_io = enrich_with_io(base, io_start, io_end);
+    enrich_with_alloc(with_io, alloc_start, alloc_end)
 }
 
 #[cfg(not(unix))]
-fn resource_usage_delta(_: Option<RusageSnapshot>, _: Option<RusageSnapshot>) -> ResourceUsage {
+fn resource_usage_delta(
+    _: Option<RusageSnapshot>,
+    _: Option<RusageSnapshot>,
+    _: Option<IoSnapshot>,
+    _: Option<IoSnapshot>,
+    _: Option<AllocationSnapshot>,
+    _: Option<AllocationSnapshot>,
+) -> ResourceUsage {
     ResourceUsage::default()
+}
+
+#[cfg(target_os = "linux")]
+fn take_io_snapshot() -> Option<IoSnapshot> {
+    use procfs::process::Process;
+
+    let process = Process::myself().ok()?;
+    let io = process.io().ok()?;
+    Some(IoSnapshot {
+        read_syscalls: io.syscr,
+        write_syscalls: io.syscw,
+        read_bytes: io.read_bytes,
+        write_bytes: io.write_bytes,
+        read_chars: io.rchar,
+        write_chars: io.wchar,
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn take_io_snapshot() -> Option<IoSnapshot> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn enrich_with_io(
+    mut usage: ResourceUsage,
+    start: Option<IoSnapshot>,
+    end: Option<IoSnapshot>,
+) -> ResourceUsage {
+    match (start, end) {
+        (Some(s), Some(e)) => {
+            usage.read_syscalls = Some(e.read_syscalls.saturating_sub(s.read_syscalls) as i64);
+            usage.write_syscalls = Some(e.write_syscalls.saturating_sub(s.write_syscalls) as i64);
+            usage.read_bytes = Some(e.read_bytes.saturating_sub(s.read_bytes) as i64);
+            usage.write_bytes = Some(e.write_bytes.saturating_sub(s.write_bytes) as i64);
+            usage.read_chars = Some(e.read_chars.saturating_sub(s.read_chars) as i64);
+            usage.write_chars = Some(e.write_chars.saturating_sub(s.write_chars) as i64);
+            usage
+        }
+        _ => usage,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn enrich_with_io(
+    usage: ResourceUsage,
+    _: Option<IoSnapshot>,
+    _: Option<IoSnapshot>,
+) -> ResourceUsage {
+    usage
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn take_alloc_snapshot() -> Option<AllocationSnapshot> {
+    use jemalloc_ctl::stats::{active, allocated, resident};
+
+    Some(AllocationSnapshot {
+        allocated: allocated::read().ok()?,
+        active: active::read().ok()?,
+        resident: resident::read().ok()?,
+    })
+}
+
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+fn take_alloc_snapshot() -> Option<AllocationSnapshot> {
+    None
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn enrich_with_alloc(
+    mut usage: ResourceUsage,
+    start: Option<AllocationSnapshot>,
+    end: Option<AllocationSnapshot>,
+) -> ResourceUsage {
+    match (start, end) {
+        (Some(s), Some(e)) => {
+            usage.allocated_bytes = Some(e.allocated.saturating_sub(s.allocated) as i64);
+            usage.active_bytes = Some(e.active.saturating_sub(s.active) as i64);
+            usage.resident_bytes = Some(e.resident.saturating_sub(s.resident) as i64);
+            usage
+        }
+        _ => usage,
+    }
+}
+
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+fn enrich_with_alloc(
+    usage: ResourceUsage,
+    _: Option<AllocationSnapshot>,
+    _: Option<AllocationSnapshot>,
+) -> ResourceUsage {
+    usage
 }
 
 fn ensure_dir_for_depth(
