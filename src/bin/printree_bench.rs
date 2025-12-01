@@ -135,6 +135,10 @@ struct CaseResult {
     dirs: usize,
     symlinks: usize,
     errors: usize,
+    /// Count of traversal entries whose parent was not observed first.
+    ordering_violations: usize,
+    /// Count of I/O-backed walk errors (e.g., failed to open a path).
+    open_failures: usize,
     note: Option<String>,
     resources: ResourceUsage,
 }
@@ -315,14 +319,35 @@ fn run_traversal_case(root: &Path) -> Result<CaseResult> {
     let mut dirs = 0usize;
     let mut symlinks = 0usize;
     let mut errors = 0usize;
+    let mut open_failures = 0usize;
+    let mut ordering_violations = 0usize;
+    let mut visited_dirs: HashSet<PathBuf> = HashSet::new();
+    visited_dirs.insert(root.to_path_buf());
 
     for entry in WalkDir::new(root).follow_links(false) {
         match entry {
             Ok(e) => {
+                let path = e.into_path();
+                let parent = path.parent();
+                if let Some(parent) = parent {
+                    if !visited_dirs.contains(parent) {
+                        ordering_violations += 1;
+                    }
+                }
+
+                let ft = match path.symlink_metadata() {
+                    Ok(meta) => meta.file_type(),
+                    Err(err) => {
+                        errors += 1;
+                        eprintln!("metadata error for {}: {err}", path.display());
+                        continue;
+                    }
+                };
+
                 entries += 1;
-                let ft = e.file_type();
                 if ft.is_dir() {
                     dirs += 1;
+                    visited_dirs.insert(path);
                 } else if ft.is_symlink() {
                     symlinks += 1;
                 } else {
@@ -331,6 +356,9 @@ fn run_traversal_case(root: &Path) -> Result<CaseResult> {
             }
             Err(err) => {
                 errors += 1;
+                if err.io_error().is_some() {
+                    open_failures += 1;
+                }
                 eprintln!("walk error: {err}");
             }
         }
@@ -348,11 +376,17 @@ fn run_traversal_case(root: &Path) -> Result<CaseResult> {
         alloc_before,
         alloc_after,
     );
-    let status = if errors == 0 { "ok" } else { "partial" };
-    let note = if errors == 0 {
-        None
+    let status = if errors == 0 && ordering_violations == 0 {
+        "ok"
     } else {
-        Some(format!("encountered {} traversal errors", errors))
+        "partial"
+    };
+    let note = match (errors, ordering_violations, open_failures) {
+        (0, 0, 0) => None,
+        _ => Some(format!(
+            "errors={}, ordering_violations={}, open_failures={}",
+            errors, ordering_violations, open_failures
+        )),
     };
 
     Ok(CaseResult {
@@ -364,6 +398,8 @@ fn run_traversal_case(root: &Path) -> Result<CaseResult> {
         dirs,
         symlinks,
         errors,
+        ordering_violations,
+        open_failures,
         note,
         resources,
     })

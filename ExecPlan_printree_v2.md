@@ -14,6 +14,7 @@ The v2 effort aims to deliver verifiable performance and stable on-disk contract
 - [x] (2025-11-26 09:15Z) Promoted the benchmark runner from a stub to a real traversal case that reports wall time and entry counts while validating the presence of the generated tree root.
 - [x] (2025-11-26 12:00Z) Instrumented the traversal benchmark with rusage-based deltas (RSS, faults, block ops, context switches) to start quantifying perf guardrails.
 - [x] (2025-11-26 13:30Z) Added `/proc/self/io` syscall and I/O byte deltas plus jemalloc allocation deltas to the traversal benchmark to expand measurable perf guardrails.
+- [x] (2025-11-26 14:30Z) Hardened traversal correctness metrics by flagging parent-before-child ordering violations and I/O-backed open failures so regressions are surfaced in reports.
 - [ ] (2025-11-26 09:15Z) Capture example benchmark outputs and CI wiring notes once additional cases land.
 
 ## Surprises & Discoveries
