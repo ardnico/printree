@@ -1,6 +1,6 @@
 [package]
 name = "printree"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 license = "Apache-2.0"
 description = "Cross-platform CLI to print directory trees with encoding-aware previews"
@@ -51,3 +51,4 @@ jemalloc-ctl = "0.5"
 
 [dev-dependencies]
 tempfile = "3"
+
