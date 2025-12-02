@@ -243,7 +243,7 @@ fn run_gen(args: &GenArgs) -> Result<()> {
         let dir = ensure_dir_for_depth(&root, depth, &mut rng, &mut created_dirs)?;
         let file_name = random_file_name(&mut rng, i);
         let path = dir.join(file_name);
-        let mut file =
+        let file =
             File::create(&path).with_context(|| format!("creating file {}", path.display()))?;
 
         if args.random_sizes {
@@ -569,9 +569,9 @@ fn take_alloc_snapshot() -> Option<AllocationSnapshot> {
     use jemalloc_ctl::stats::{active, allocated, resident};
 
     Some(AllocationSnapshot {
-        allocated: allocated::read().ok()?,
-        active: active::read().ok()?,
-        resident: resident::read().ok()?,
+        allocated: allocated::read().ok().map(|v| v as u64)?,
+        active: active::read().ok().map(|v| v as u64)?,
+        resident: resident::read().ok().map(|v| v as u64)?,
     })
 }
 
@@ -683,7 +683,7 @@ fn create_symlinks(
     }
     for i in 0..count {
         let target = &targets[rng.gen_range(0..targets.len())];
-        let link_dir = ensure_dir_for_depth(root, rng.gen_range(0..=3), rng, &mut created_dirs)?;
+        let link_dir = ensure_dir_for_depth(root, rng.gen_range(0..=3), rng, created_dirs)?;
         let link_name = format!("symlink-{}", i);
         let link_path = link_dir.join(link_name);
         create_symlink(target, &link_path).with_context(|| {

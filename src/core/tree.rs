@@ -16,7 +16,10 @@ use serde::Serialize;
 use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
 
 use crate::cli::{Cli, Format, MatchMode, SortMode};
-use crate::utils::{allow_type, build_patterns, color_choice, is_hidden, match_globs, PatternList};
+use crate::utils::{
+    allow_type, build_include_prefixes, build_patterns, color_choice, include_dir_allowed,
+    is_hidden, PatternList,
+};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -28,6 +31,8 @@ pub fn run_tree(cli: &Cli) -> Result<()> {
     let root = cli.path.clone().unwrap_or_else(|| PathBuf::from("."));
     let include_glob = build_patterns(&cli.includes, cli.pattern_syntax, true)?;
     let exclude_glob = build_patterns(&cli.excludes, cli.pattern_syntax, false)?;
+    let include_prefixes =
+        build_include_prefixes(&root, &cli.includes, cli.pattern_syntax, cli.match_mode);
     let filters = Filters::from_cli(cli, &root)?;
     let git = GitTracker::prepare(&root, cli)?;
     let jobs = JobPool::new(cli)?;
@@ -37,6 +42,7 @@ pub fn run_tree(cli: &Cli) -> Result<()> {
             &root,
             cli,
             &include_glob,
+            &include_prefixes,
             &exclude_glob,
             &filters,
             &git,
@@ -46,6 +52,7 @@ pub fn run_tree(cli: &Cli) -> Result<()> {
             &root,
             cli,
             &include_glob,
+            &include_prefixes,
             &exclude_glob,
             &filters,
             &git,
@@ -55,6 +62,7 @@ pub fn run_tree(cli: &Cli) -> Result<()> {
             &root,
             cli,
             &include_glob,
+            &include_prefixes,
             &exclude_glob,
             &filters,
             &git,
@@ -64,6 +72,7 @@ pub fn run_tree(cli: &Cli) -> Result<()> {
             &root,
             cli,
             &include_glob,
+            &include_prefixes,
             &exclude_glob,
             &filters,
             &git,
@@ -73,6 +82,7 @@ pub fn run_tree(cli: &Cli) -> Result<()> {
             &root,
             cli,
             &include_glob,
+            &include_prefixes,
             &exclude_glob,
             &filters,
             &git,
@@ -82,6 +92,7 @@ pub fn run_tree(cli: &Cli) -> Result<()> {
             &root,
             cli,
             &include_glob,
+            &include_prefixes,
             &exclude_glob,
             &filters,
             &git,
@@ -91,6 +102,7 @@ pub fn run_tree(cli: &Cli) -> Result<()> {
             &root,
             cli,
             &include_glob,
+            &include_prefixes,
             &exclude_glob,
             &filters,
             &git,
@@ -1106,6 +1118,7 @@ fn run_tree_plain(
     root: &Path,
     cli: &Cli,
     include_glob: &Option<PatternList>,
+    include_prefixes: &HashSet<PathBuf>,
     exclude_glob: &Option<PatternList>,
     filters: &Filters,
     git: &GitTracker,
@@ -1138,10 +1151,12 @@ fn run_tree_plain(
     let mut pending_dirs: Vec<PlainPending> = Vec::new();
     if let Some(frame) = read_dir_frame(
         root,
+        root,
         "",
         1,
         cli,
         include_glob,
+        include_prefixes,
         exclude_glob,
         filters,
         git,
@@ -1181,11 +1196,13 @@ fn run_tree_plain(
             let child_path = entry_meta.path.clone();
             let pending_entry = PlainPending::new(entry, frame.prefix.clone(), is_last);
             match read_dir_frame(
+                root,
                 &child_path,
                 &child_prefix,
                 frame.depth + 1,
                 cli,
                 include_glob,
+                include_prefixes,
                 exclude_glob,
                 filters,
                 git,
@@ -1373,6 +1390,7 @@ fn run_tree_json(
     root: &Path,
     cli: &Cli,
     include_glob: &Option<PatternList>,
+    include_prefixes: &HashSet<PathBuf>,
     exclude_glob: &Option<PatternList>,
     filters: &Filters,
     git: &GitTracker,
@@ -1417,10 +1435,12 @@ fn run_tree_json(
     let mut stack: Vec<Frame> = Vec::new();
     if let Some(frame) = read_dir_frame(
         root,
+        root,
         "",
         1,
         cli,
         include_glob,
+        include_prefixes,
         exclude_glob,
         filters,
         git,
@@ -1455,11 +1475,13 @@ fn run_tree_json(
         if descend {
             let child_path = entry_meta.path.clone();
             if let Some(frame) = read_dir_frame(
+                root,
                 &child_path,
                 &child_prefix,
                 frame.depth + 1,
                 cli,
                 include_glob,
+                include_prefixes,
                 exclude_glob,
                 filters,
                 git,
@@ -1480,6 +1502,7 @@ fn run_tree_toon(
     root: &Path,
     cli: &Cli,
     include_glob: &Option<PatternList>,
+    include_prefixes: &HashSet<PathBuf>,
     exclude_glob: &Option<PatternList>,
     filters: &Filters,
     git: &GitTracker,
@@ -1503,10 +1526,12 @@ fn run_tree_toon(
         let mut stack: Vec<Frame> = Vec::new();
         if let Some(frame) = read_dir_frame(
             root,
+            root,
             "",
             1,
             cli,
             include_glob,
+            include_prefixes,
             exclude_glob,
             filters,
             git,
@@ -1541,11 +1566,13 @@ fn run_tree_toon(
             if descend {
                 let child_path = entry_meta.path.clone();
                 if let Some(frame) = read_dir_frame(
+                    root,
                     &child_path,
                     &child_prefix,
                     frame.depth + 1,
                     cli,
                     include_glob,
+                    include_prefixes,
                     exclude_glob,
                     filters,
                     git,
@@ -1638,6 +1665,7 @@ fn run_tree_ndjson(
     root: &Path,
     cli: &Cli,
     include_glob: &Option<PatternList>,
+    include_prefixes: &HashSet<PathBuf>,
     exclude_glob: &Option<PatternList>,
     filters: &Filters,
     git: &GitTracker,
@@ -1668,10 +1696,12 @@ fn run_tree_ndjson(
     let mut stack: Vec<Frame> = Vec::new();
     if let Some(frame) = read_dir_frame(
         root,
+        root,
         "",
         1,
         cli,
         include_glob,
+        include_prefixes,
         exclude_glob,
         filters,
         git,
@@ -1707,11 +1737,13 @@ fn run_tree_ndjson(
         if descend {
             let child_path = entry_meta.path.clone();
             if let Some(frame) = read_dir_frame(
+                root,
                 &child_path,
                 &child_prefix,
                 frame.depth + 1,
                 cli,
                 include_glob,
+                include_prefixes,
                 exclude_glob,
                 filters,
                 git,
@@ -1730,6 +1762,7 @@ fn run_tree_csv(
     root: &Path,
     cli: &Cli,
     include_glob: &Option<PatternList>,
+    include_prefixes: &HashSet<PathBuf>,
     exclude_glob: &Option<PatternList>,
     filters: &Filters,
     git: &GitTracker,
@@ -1763,10 +1796,12 @@ fn run_tree_csv(
     let mut stack: Vec<Frame> = Vec::new();
     if let Some(frame) = read_dir_frame(
         root,
+        root,
         "",
         1,
         cli,
         include_glob,
+        include_prefixes,
         exclude_glob,
         filters,
         git,
@@ -1801,11 +1836,13 @@ fn run_tree_csv(
         if descend {
             let child_path = entry_meta.path.clone();
             if let Some(frame) = read_dir_frame(
+                root,
                 &child_path,
                 &child_prefix,
                 frame.depth + 1,
                 cli,
                 include_glob,
+                include_prefixes,
                 exclude_glob,
                 filters,
                 git,
@@ -1824,6 +1861,7 @@ fn run_tree_yaml(
     root: &Path,
     cli: &Cli,
     include_glob: &Option<PatternList>,
+    include_prefixes: &HashSet<PathBuf>,
     exclude_glob: &Option<PatternList>,
     filters: &Filters,
     git: &GitTracker,
@@ -1845,10 +1883,12 @@ fn run_tree_yaml(
 
     if root_meta.points_to_directory() && !matches!(cli.max_depth, Some(1)) {
         children = build_yaml_children(
+            root,
             &root_meta,
             1,
             cli,
             include_glob,
+            include_prefixes,
             exclude_glob,
             filters,
             git,
@@ -1884,10 +1924,12 @@ fn run_tree_yaml(
 }
 
 fn build_yaml_children(
+    root: &Path,
     parent_meta: &EntryMeta,
     depth: usize,
     cli: &Cli,
     include_glob: &Option<PatternList>,
+    include_prefixes: &HashSet<PathBuf>,
     exclude_glob: &Option<PatternList>,
     filters: &Filters,
     git: &GitTracker,
@@ -1897,11 +1939,13 @@ fn build_yaml_children(
 ) -> Result<Vec<YamlNode>> {
     let mut nodes = Vec::new();
     if let Some(frame) = read_dir_frame(
+        root,
         &parent_meta.path,
         "",
         depth,
         cli,
         include_glob,
+        include_prefixes,
         exclude_glob,
         filters,
         git,
@@ -1913,12 +1957,14 @@ fn build_yaml_children(
                 frame.depth,
                 cli,
                 include_glob,
+                include_prefixes,
                 exclude_glob,
                 filters,
                 git,
                 jobs,
                 visited,
                 root_guard,
+                root,
             )?;
             nodes.push(node);
         }
@@ -1932,12 +1978,14 @@ fn build_yaml_node(
     depth: usize,
     cli: &Cli,
     include_glob: &Option<PatternList>,
+    include_prefixes: &HashSet<PathBuf>,
     exclude_glob: &Option<PatternList>,
     filters: &Filters,
     git: &GitTracker,
     jobs: &JobPool,
     visited: &mut HashSet<PathBuf>,
     root_guard: Option<&Path>,
+    root: &Path,
 ) -> Result<YamlNode> {
     let (mut entry, descend, _child_prefix) =
         handle_entry_with_guard(meta, "", depth, true, cli, visited, root_guard);
@@ -1946,10 +1994,12 @@ fn build_yaml_node(
     if descend {
         entry.size = None;
         children = build_yaml_children(
+            root,
             meta,
             depth + 1,
             cli,
             include_glob,
+            include_prefixes,
             exclude_glob,
             filters,
             git,
@@ -1977,12 +2027,22 @@ fn run_tree_html(
     root: &Path,
     cli: &Cli,
     include_glob: &Option<PatternList>,
+    include_prefixes: &HashSet<PathBuf>,
     exclude_glob: &Option<PatternList>,
     filters: &Filters,
     git: &GitTracker,
     jobs: &JobPool,
 ) -> Result<()> {
-    let entries = collect_entries_flat(root, cli, include_glob, exclude_glob, filters, git, jobs)?;
+    let entries = collect_entries_flat(
+        root,
+        cli,
+        include_glob,
+        include_prefixes,
+        exclude_glob,
+        filters,
+        git,
+        jobs,
+    )?;
     let json = serde_json::to_string(&entries)?;
     let escaped = escape_script_data(&json);
 
@@ -2018,6 +2078,7 @@ fn collect_entries_flat(
     root: &Path,
     cli: &Cli,
     include_glob: &Option<PatternList>,
+    include_prefixes: &HashSet<PathBuf>,
     exclude_glob: &Option<PatternList>,
     filters: &Filters,
     git: &GitTracker,
@@ -2044,10 +2105,12 @@ fn collect_entries_flat(
     let mut stack: Vec<Frame> = Vec::new();
     if let Some(frame) = read_dir_frame(
         root,
+        root,
         "",
         1,
         cli,
         include_glob,
+        include_prefixes,
         exclude_glob,
         filters,
         git,
@@ -2080,11 +2143,13 @@ fn collect_entries_flat(
         if descend {
             let child_path = entry_meta.path.clone();
             if let Some(frame) = read_dir_frame(
+                root,
                 &child_path,
                 &child_prefix,
                 frame.depth + 1,
                 cli,
                 include_glob,
+                include_prefixes,
                 exclude_glob,
                 filters,
                 git,
@@ -2193,11 +2258,13 @@ fn entry_kind_label(kind: EntryKind) -> &'static str {
 // ヘルパー関数
 // ---------------------------------------------------------------------
 fn read_dir_frame(
+    root: &Path,
     path: &Path,
     prefix: &str,
     depth: usize,
     cli: &Cli,
     include_glob: &Option<PatternList>,
+    include_prefixes: &HashSet<PathBuf>,
     exclude_glob: &Option<PatternList>,
     filters: &Filters,
     git: &GitTracker,
@@ -2232,7 +2299,39 @@ fn read_dir_frame(
                 }
 
                 let fullp = de.path();
-                if !match_globs(path, &fullp, include_glob, exclude_glob, cli.match_mode) {
+                let target = match cli.match_mode {
+                    MatchMode::Name => fullp.file_name().map(PathBuf::from).unwrap_or_default(),
+                    MatchMode::Path => fullp.strip_prefix(root).unwrap_or(&fullp).to_path_buf(),
+                };
+
+                let excluded = exclude_glob
+                    .as_ref()
+                    .map(|gs| gs.is_match(&target))
+                    .unwrap_or(false);
+                if excluded {
+                    continue;
+                }
+
+                let include_ok = include_glob
+                    .as_ref()
+                    .map(|gs| gs.is_match(&target))
+                    .unwrap_or(true);
+
+                let is_dir = file_type_hint
+                    .as_ref()
+                    .map(|ft| ft.is_dir())
+                    .unwrap_or_else(|| fullp.is_dir());
+
+                let allow_dir = is_dir
+                    && include_dir_allowed(
+                        root,
+                        &fullp,
+                        include_glob,
+                        include_prefixes,
+                        cli.match_mode,
+                    );
+
+                if !include_ok && !allow_dir {
                     continue;
                 }
 

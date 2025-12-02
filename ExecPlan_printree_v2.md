@@ -19,6 +19,8 @@ The v2 effort aims to deliver verifiable performance and stable on-disk contract
 - [x] (2025-11-26 17:05Z) Captured example benchmark outputs and CI wiring notes covering fixtures, regeneration steps, and report expectations.
 - [x] (2025-11-26 17:20Z) Checked in sample manifest JSON and a minimal `run` report under `installer/examples/bench/` to anchor downstream consumers.
 - [x] (2025-11-26 17:30Z) Added CI smoke targets for `printree-bench gen` (small counts) and `run` to guard the binary contract while the full suite incubates.
+- [x] (2025-11-27 08:50Z) Captured the requirement that include-filtered listings must surface all intermediate directories on the path to matched entries and defined normal/abnormal test coverage to enforce it.
+- [x] (2025-11-27 10:20Z) Implemented include-friendly traversal that preserves ancestor directories under include filters, added success/failure coverage for path-prefix handling, and refreshed plan notes.
 
 ## Surprises & Discoveries
 
@@ -44,6 +46,9 @@ The v2 effort aims to deliver verifiable performance and stable on-disk contract
 - Decision: Reference manifests and reports will live under `installer/examples/bench/` so downstream consumers have stable fixtures that match the harness contract.
   Rationale: Keeps fixtures versioned and easy to copy into docs or CI while avoiding churn in the main repo root.
   Date/Author: 2025-11-26 / assistant
+- Decision: Include filters must preserve ancestor directories by deriving path prefixes (when possible) and otherwise allowing directory descent whenever includes are present, while still honoring excludes.
+  Rationale: Users expect filtered listings to show the full path to matches, and traversal would otherwise prune necessary context.
+  Date/Author: 2025-11-27 / assistant
 
 ## Outcomes & Retrospective
 
@@ -58,6 +63,8 @@ The v2 effort aims to deliver verifiable performance and stable on-disk contract
 First, add a new binary target `src/bin/printree_bench.rs` that uses `clap` to expose `gen` and `run` subcommands. The `gen` command will accept file count, maximum depth, symlink count, random size toggle, optional RNG seed, destination root, and a `--force` flag to clear existing output. Implement deterministic yet varied directory generation by sampling depth and path segments, ensuring both deep and wide layouts, hidden names, and randomized mtimes using `filetime`. File sizes will be assigned via `set_len` to avoid heavy writes while still spanning bytes to ~1GB when random sizes are requested. Symlink creation must target existing files or directories and remain deterministic when a seed is provided. Each generation writes a manifest (JSON) next to the tree with counts by entry type, symlink counts, and the RNG seed; manifest writes should not abort generation on failure but must log warnings. The `run` subcommand accepts `--cases` and `--out` arguments, emits a structured JSON report that includes traversal metrics and, when available, the manifest path while warning if it cannot be read. Update `Cargo.toml` with required dependencies (`rand`, `filetime`) and keep all changes gated to the new binary so existing CLI behavior remains untouched.
 
 Next, harden the plan by locking in fixtures and automation. Capture a small reference manifest and traversal report under `installer/examples/bench/` that match the current schema and explicitly note sparse allocations so readers do not assume dense data. Add CI smoke jobs that run `printree-bench gen --files 50 --depth 4 --symlinks 2 --random-sizes --seed 7 --force --root target/ci-gen` and `printree-bench run --cases all --out target/ci-gen/report.json --root target/ci-gen/tree` to guard against argument or contract regressions without blowing CI time. Document in this plan how to regenerate fixtures when the schema changes and require updates when flags or output fields evolve. Close the loop by recording acceptance criteria and retrospective notes once fixtures and smoke jobs are in place.
+
+Finally, extend the tree listing path filters so that include patterns still render every intermediate directory between the root and matching entries, even when those directories do not themselves satisfy the include glob or regex. Define and implement deterministic logic (favoring path-mode glob prefixes first, then falling back to allowing directories when includes are present) that keeps traversal viable under includes while still respecting excludes. Write normal-path tests that prove ancestors remain in output for include-filtered listings and abnormal-path tests that confirm unrelated directories remain filtered out. Update fixtures or plan notes if output shape or acceptance expectations shift because of the include handling.
 
 ## Concrete Steps
 
@@ -88,6 +95,8 @@ For fixtures and CI readiness, validate:
 
 Confirm the manifest matches `installer/examples/bench/manifest.small.json`, the report matches `installer/examples/bench/run.small.json`, and the README in that directory explains sparse allocation and refresh steps. CI smoke jobs should mirror these commands against a disposable `target/ci-gen` root and fail on schema or flag regressions.
 
+For include-filter behavior, construct fixtures (or ad-hoc temporary trees) where a deep file matches an include. Validate that the printed tree now shows each ancestor directory even when those ancestors do not match the include pattern. Negative validation must cover directories that are neither ancestors nor matches to prove they stay filtered out. Tests should cover both glob and regex include syntaxes where applicable.
+
 ## Idempotence and Recovery
 
 The `--force` flag allows safe regeneration by clearing the target root before writing. Without `--force`, generation should refuse to overwrite existing data to avoid accidental loss. Using a fixed `--seed` yields reproducible directory layouts and symlink choices. If generation fails mid-way, re-run with `--force` to start clean. Manifest writes are best-effort; if a manifest is missing or unreadable, benchmarks should still run and record the absence in the report.
@@ -100,6 +109,9 @@ The `--force` flag allows safe regeneration by clearing the target root before w
   - `README.md`: notes sparse allocations, explains when to refresh fixtures, and lists the exact regen commands.
 - Capture command transcripts in this plan or sibling notes when fixtures are regenerated to keep provenance obvious.
 - CI smoke jobs should run the small gen/run commands against `target/ci-gen` and assert exit-code success while archiving the report for debugging.
+
+Revision note (2025-11-27 08:55Z): Added include-filter ancestor rendering requirements, test expectations for success/failure cases, and the implementation milestone to make the ExecPlan a usable guide for the new behavior.
+Revision note (2025-11-27 10:20Z): Marked include-handling work complete with implemented traversal logic and tests that cover both expected ancestors and excluded/unrelated directories.
 
 ## Interfaces and Dependencies
 
