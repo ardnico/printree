@@ -17,11 +17,15 @@ The v2 effort aims to deliver verifiable performance and stable on-disk contract
 - [x] (2025-11-26 14:30Z) Hardened traversal correctness metrics by flagging parent-before-child ordering violations and I/O-backed open failures so regressions are surfaced in reports.
 - [x] (2025-11-26 15:20Z) Added generation manifests that summarize created entries and wired `printree-bench run` to surface the manifest path in reports while tolerating missing manifests.
 - [ ] (2025-11-26 09:15Z) Capture example benchmark outputs and CI wiring notes once additional cases land.
+- [ ] (2025-11-26 16:00Z) Check in sample manifest JSON and a minimal `run` report to anchor expectations for downstream consumers.
+- [ ] (2025-11-26 16:30Z) Add CI smoke targets for `printree-bench gen` (small counts) and `run` to keep the binary from regressing while the full suite incubates.
 
 ## Surprises & Discoveries
 
 - Observation: Benchmark runs must tolerate missing generation manifests because production-like deployments can prune artifacts.
   Evidence: `printree-bench run` now logs a warning when the manifest is absent but still emits a report.
+- Observation: Generation can leave sparse files that appear zeroed even when random sizes are requested because `set_len` does not allocate blocks.
+  Evidence: The plan assumes sparse writes; document this so benchmarks do not mistake low disk usage for a bug.
 
 ## Decision Log
 
@@ -33,6 +37,12 @@ The v2 effort aims to deliver verifiable performance and stable on-disk contract
   Date/Author: 2025-11-25 / assistant
 - Decision: Generation writes a manifest with counts and the RNG seed, but manifest write/read failures only warn.
   Rationale: Benchmarks must remain runnable even when artifacts are pruned or filesystems block metadata writes.
+  Date/Author: 2025-11-26 / assistant
+- Decision: Sparse allocations remain intentional for `--random-sizes`; do not convert to buffered writes unless we explicitly need filled blocks for an I/O case.
+  Rationale: Preserves speed and disk footprint for the 1M-file generator while leaving space for a future "real I/O" case.
+  Date/Author: 2025-11-26 / assistant
+- Decision: Reference manifests and reports will live under `installer/examples/bench/` so downstream consumers have stable fixtures that match the harness contract.
+  Rationale: Keeps fixtures versioned and easy to copy into docs or CI while avoiding churn in the main repo root.
   Date/Author: 2025-11-26 / assistant
 
 ## Outcomes & Retrospective
@@ -46,6 +56,12 @@ The `printree` crate currently exposes the main CLI in `src/main.rs` with argume
 ## Plan of Work
 
 First, add a new binary target `src/bin/printree_bench.rs` that uses `clap` to expose `gen` and `run` subcommands. The `gen` command will accept file count, maximum depth, symlink count, random size toggle, optional RNG seed, destination root, and a `--force` flag to clear existing output. Implement deterministic yet varied directory generation by sampling depth and path segments, ensuring both deep and wide layouts, hidden names, and randomized mtimes using `filetime`. File sizes will be assigned via `set_len` to avoid heavy writes while still spanning bytes to ~1GB when random sizes are requested. Symlink creation must target existing files or directories and remain deterministic when a seed is provided. Each generation writes a manifest (JSON) next to the tree with counts by entry type, symlink counts, and the RNG seed; manifest writes should not abort generation on failure but must log warnings. The `run` subcommand accepts `--cases` and `--out` arguments, emits a structured JSON report that includes traversal metrics and, when available, the manifest path while warning if it cannot be read. Update `Cargo.toml` with required dependencies (`rand`, `filetime`) and keep all changes gated to the new binary so existing CLI behavior remains untouched.
+
+Next, harden the plan by locking in fixtures and automation:
+
+- Capture a small reference manifest and traversal report under `installer/examples/bench/` that match the current schema and explicitly note sparse allocations so readers do not assume dense data.
+- Add CI smoke jobs that run `printree-bench gen --files 50 --depth 4 --symlinks 2 --random-sizes --seed 7 --force --root target/ci-gen` and `printree-bench run --cases all --out target/ci-gen/report.json --root target/ci-gen/tree` to guard against argument or contract regressions without blowing CI time.
+- Document in `ExecPlan_printree_v2.md` how to regenerate fixtures when the schema changes and require updates when flags or output fields evolve.
 
 ## Concrete Steps
 
@@ -71,7 +87,11 @@ The `--force` flag allows safe regeneration by clearing the target root before w
 
 ## Artifacts and Notes
 
-- Placeholder: add command transcripts, example manifests, and example JSON outputs once the generator and runner exist.
+- Store reference fixtures under `installer/examples/bench/`:
+  - `manifest.small.json`: output from `printree-bench gen --files 50 --depth 4 --symlinks 2 --random-sizes --seed 7 --force --root target/ci-gen` before cleanup.
+  - `run.small.json`: output from `printree-bench run --cases all --out target/ci-gen/report.json --root target/ci-gen/tree` against the generated tree.
+  - Include a README snippet in that directory describing sparse allocations so consumers do not misread the low disk usage.
+- Capture command transcripts in this plan or sibling notes when fixtures are regenerated to keep provenance obvious.
 
 ## Interfaces and Dependencies
 
@@ -79,5 +99,5 @@ The `--force` flag allows safe regeneration by clearing the target root before w
 - Add `filetime` to set modified times reliably across platforms.
 - The new binary should remain self-contained under `src/bin/printree_bench.rs` without altering existing modules.
 
-Revision note (2025-11-26 15:25Z): Updated the plan to document the generation manifest behavior, report surfacing, and warning-only handling for missing manifests.
+Revision note (2025-11-26 16:10Z): Added fixture locations, smoke-CI expectations, and sparse allocation clarifications for the benchmark harness.
 
