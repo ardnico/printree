@@ -2,11 +2,13 @@ use anyhow::Result;
 use ignore::{overrides::OverrideBuilder, WalkBuilder};
 use serde::Serialize;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
 
 use crate::cli::{Cli, Format};
-use crate::utils::{allow_type, build_patterns, color_choice, match_globs};
+use crate::utils::{
+    allow_type, build_include_prefixes, build_patterns, color_choice, include_dir_allowed,
+};
 
 #[derive(Serialize)]
 struct JsonEntry<'a> {
@@ -37,6 +39,8 @@ fn run_tree_gitignore_plain(cli: &Cli) -> Result<()> {
 
     let include_glob = build_patterns(&cli.includes, cli.pattern_syntax, true)?;
     let exclude_glob = build_patterns(&cli.excludes, cli.pattern_syntax, false)?;
+    let include_prefixes =
+        build_include_prefixes(root_path, &cli.includes, cli.pattern_syntax, cli.match_mode);
 
     let mut ov = OverrideBuilder::new(&root);
     for exc in &cli.excludes {
@@ -73,13 +77,40 @@ fn run_tree_gitignore_plain(cli: &Cli) -> Result<()> {
                         continue;
                     }
                 }
-                if !match_globs(
-                    root_path,
-                    path,
-                    &include_glob,
-                    &exclude_glob,
-                    cli.match_mode,
-                ) {
+
+                let target: PathBuf = match cli.match_mode {
+                    crate::cli::MatchMode::Name => {
+                        path.file_name().map(PathBuf::from).unwrap_or_default()
+                    }
+                    crate::cli::MatchMode::Path => {
+                        path.strip_prefix(root_path).unwrap_or(path).to_path_buf()
+                    }
+                };
+
+                let excluded = exclude_glob
+                    .as_ref()
+                    .map(|gs| gs.is_match(&target))
+                    .unwrap_or(false);
+                if excluded {
+                    continue;
+                }
+
+                let include_ok = include_glob
+                    .as_ref()
+                    .map(|gs| gs.is_match(&target))
+                    .unwrap_or(true);
+
+                let is_dir = d.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+                let allow_dir = is_dir
+                    && include_dir_allowed(
+                        root_path,
+                        path,
+                        &include_glob,
+                        &include_prefixes,
+                        cli.match_mode,
+                    );
+
+                if !include_ok && !allow_dir {
                     continue;
                 }
 
@@ -114,6 +145,8 @@ fn run_tree_gitignore_json(cli: &Cli) -> Result<()> {
     let root_path = Path::new(&root);
     let include_glob = build_patterns(&cli.includes, cli.pattern_syntax, true)?;
     let exclude_glob = build_patterns(&cli.excludes, cli.pattern_syntax, false)?;
+    let include_prefixes =
+        build_include_prefixes(root_path, &cli.includes, cli.pattern_syntax, cli.match_mode);
     let mut stdout = std::io::BufWriter::new(std::io::stdout().lock());
 
     // ルート
@@ -165,13 +198,40 @@ fn run_tree_gitignore_json(cli: &Cli) -> Result<()> {
                         continue;
                     }
                 }
-                if !match_globs(
-                    root_path,
-                    path,
-                    &include_glob,
-                    &exclude_glob,
-                    cli.match_mode,
-                ) {
+
+                let target: PathBuf = match cli.match_mode {
+                    crate::cli::MatchMode::Name => {
+                        path.file_name().map(PathBuf::from).unwrap_or_default()
+                    }
+                    crate::cli::MatchMode::Path => {
+                        path.strip_prefix(root_path).unwrap_or(path).to_path_buf()
+                    }
+                };
+
+                let excluded = exclude_glob
+                    .as_ref()
+                    .map(|gs| gs.is_match(&target))
+                    .unwrap_or(false);
+                if excluded {
+                    continue;
+                }
+
+                let include_ok = include_glob
+                    .as_ref()
+                    .map(|gs| gs.is_match(&target))
+                    .unwrap_or(true);
+
+                let is_dir = d.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+                let allow_dir = is_dir
+                    && include_dir_allowed(
+                        root_path,
+                        path,
+                        &include_glob,
+                        &include_prefixes,
+                        cli.match_mode,
+                    );
+
+                if !include_ok && !allow_dir {
                     continue;
                 }
 

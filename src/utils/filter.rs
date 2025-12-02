@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use regex_automata::meta::Regex;
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -48,6 +49,74 @@ pub fn build_patterns(
     }
 }
 
+pub fn build_include_prefixes(
+    root: &Path,
+    patterns: &[String],
+    syntax: PatternSyntax,
+    mode: MatchMode,
+) -> HashSet<PathBuf> {
+    if patterns.is_empty() || !matches!(mode, MatchMode::Path) {
+        return HashSet::new();
+    }
+
+    let mut prefixes = HashSet::new();
+
+    if matches!(syntax, PatternSyntax::Glob) {
+        for pattern in patterns {
+            let mut buf = PathBuf::new();
+            let normalized = pattern.replace("\\", "/");
+            let parts: Vec<_> = normalized.split('/').filter(|s| !s.is_empty()).collect();
+            let keep_last = normalized.ends_with('/');
+
+            for (idx, segment) in parts.iter().enumerate() {
+                if contains_glob_meta(segment) {
+                    break;
+                }
+
+                buf.push(segment);
+                let is_last = idx + 1 == parts.len();
+                if !is_last || keep_last {
+                    prefixes.insert(buf.clone());
+                }
+            }
+        }
+    }
+
+    // If a caller provided an absolute path, trim the root prefix so we compare
+    // relative paths consistently during traversal.
+    prefixes
+        .into_iter()
+        .map(|p| p.strip_prefix(root).map(PathBuf::from).unwrap_or(p))
+        .collect()
+}
+
+pub fn include_dir_allowed(
+    root: &Path,
+    dir_path: &Path,
+    include_glob: &Option<PatternList>,
+    include_prefixes: &HashSet<PathBuf>,
+    mode: MatchMode,
+) -> bool {
+    if include_glob.is_none() {
+        return false;
+    }
+
+    let relative = dir_path
+        .strip_prefix(root)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| dir_path.to_path_buf());
+
+    match mode {
+        MatchMode::Name => true,
+        MatchMode::Path => {
+            include_prefixes.is_empty()
+                || include_prefixes
+                    .iter()
+                    .any(|prefix| relative.starts_with(prefix))
+        }
+    }
+}
+
 pub fn allow_type(ty: &fs::FileType, types: &[TypeFilter]) -> bool {
     if types.is_empty() {
         return true;
@@ -70,7 +139,7 @@ fn target_for_glob(root: &Path, path: &Path, mode: MatchMode) -> PathBuf {
 }
 
 impl PatternList {
-    fn is_match(&self, target: &Path) -> bool {
+    pub fn is_match(&self, target: &Path) -> bool {
         match self {
             PatternList::Glob(gs) => gs.is_match(target),
             PatternList::Regex(re) => re.is_match(target.to_string_lossy().as_ref()),
@@ -161,6 +230,57 @@ mod tests {
             &included_path,
             &include,
             &None::<PatternList>,
+            MatchMode::Path
+        ));
+    }
+
+    #[test]
+    fn include_prefixes_capture_intermediate_directories() {
+        let root = Path::new("/project");
+        let prefixes = build_include_prefixes(
+            root,
+            &["src/utils/deep/file.rs".to_string()],
+            PatternSyntax::Glob,
+            MatchMode::Path,
+        );
+
+        assert!(prefixes.contains(Path::new("src")));
+        assert!(prefixes.contains(Path::new("src/utils")));
+        assert!(prefixes.contains(Path::new("src/utils/deep")));
+        assert!(!prefixes.contains(Path::new("src/utils/deep/file.rs")));
+    }
+
+    #[test]
+    fn include_dir_allowed_accepts_ancestors_and_rejects_unrelated_dirs() {
+        let root = Path::new("/project");
+        let include_glob = build_patterns(
+            &["src/utils/deep/file.rs".to_string()],
+            PatternSyntax::Glob,
+            true,
+        )
+        .expect("build patterns");
+        let prefixes = build_include_prefixes(
+            root,
+            &["src/utils/deep/file.rs".to_string()],
+            PatternSyntax::Glob,
+            MatchMode::Path,
+        );
+
+        let ancestor = root.join("src/utils");
+        assert!(include_dir_allowed(
+            root,
+            &ancestor,
+            &include_glob,
+            &prefixes,
+            MatchMode::Path
+        ));
+
+        let unrelated = root.join("docs");
+        assert!(!include_dir_allowed(
+            root,
+            &unrelated,
+            &include_glob,
+            &prefixes,
             MatchMode::Path
         ));
     }

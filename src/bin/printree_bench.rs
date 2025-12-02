@@ -10,7 +10,7 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 use filetime::{set_file_times, FileTime};
 use rand::prelude::*;
 use rand::SeedableRng;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -122,6 +122,7 @@ struct BenchReport {
     status: String,
     root: String,
     timestamp: String,
+    manifest: Option<GenerationManifest>,
     cases: Vec<CaseResult>,
 }
 
@@ -179,6 +180,19 @@ struct ResourceUsage {
     resident_bytes: Option<i64>,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+struct GenerationManifest {
+    files: usize,
+    dirs: usize,
+    symlinks: usize,
+    depth: usize,
+    random_sizes: bool,
+    seed: Option<u64>,
+    timestamp: String,
+}
+
+const MANIFEST_FILE: &str = "bench-manifest.json";
+
 fn main() -> Result<()> {
     let cli = BenchCli::parse();
     match cli.cmd {
@@ -229,7 +243,7 @@ fn run_gen(args: &GenArgs) -> Result<()> {
         let dir = ensure_dir_for_depth(&root, depth, &mut rng, &mut created_dirs)?;
         let file_name = random_file_name(&mut rng, i);
         let path = dir.join(file_name);
-        let mut file =
+        let file =
             File::create(&path).with_context(|| format!("creating file {}", path.display()))?;
 
         if args.random_sizes {
@@ -243,9 +257,29 @@ fn run_gen(args: &GenArgs) -> Result<()> {
     }
 
     if args.symlinks > 0 {
-        create_symlinks(&root, args.symlinks, &files, &mut rng)?;
+        create_symlinks(&root, args.symlinks, &files, &mut rng, &mut created_dirs)?;
     }
 
+    let manifest = GenerationManifest {
+        files: args.files,
+        dirs: created_dirs.len(),
+        symlinks: args.symlinks,
+        depth: args.depth,
+        random_sizes: args.random_sizes,
+        seed: args.seed,
+        timestamp: Utc::now().to_rfc3339(),
+    };
+
+    write_manifest(&root, &manifest)?;
+    println!(
+        "generated {} files, {} dirs, {} symlinks at {} (random_sizes={}, seed={:?})",
+        manifest.files,
+        manifest.dirs,
+        manifest.symlinks,
+        root.display(),
+        manifest.random_sizes,
+        manifest.seed
+    );
     Ok(())
 }
 
@@ -261,6 +295,14 @@ fn run_run(args: &RunArgs) -> Result<()> {
     if !root.exists() {
         bail!("benchmark root {} does not exist", root.display());
     }
+
+    let manifest = match load_manifest(&root) {
+        Ok(manifest) => manifest,
+        Err(err) => {
+            eprintln!("warning: failed to read generation manifest: {err}");
+            None
+        }
+    };
 
     let case_names = parse_cases(&args.cases)?;
     let mut results = Vec::new();
@@ -281,6 +323,7 @@ fn run_run(args: &RunArgs) -> Result<()> {
         status: overall_status.to_string(),
         root: root.display().to_string(),
         timestamp: now,
+        manifest,
         cases: results,
     };
 
@@ -526,9 +569,9 @@ fn take_alloc_snapshot() -> Option<AllocationSnapshot> {
     use jemalloc_ctl::stats::{active, allocated, resident};
 
     Some(AllocationSnapshot {
-        allocated: allocated::read().ok()?,
-        active: active::read().ok()?,
-        resident: resident::read().ok()?,
+        allocated: allocated::read().ok().map(|v| v as u64)?,
+        active: active::read().ok().map(|v| v as u64)?,
+        resident: resident::read().ok().map(|v| v as u64)?,
     })
 }
 
@@ -607,16 +650,40 @@ fn apply_random_mtime(path: &Path, rng: &mut StdRng) -> Result<()> {
     Ok(())
 }
 
-fn create_symlinks(root: &Path, count: usize, targets: &[PathBuf], rng: &mut StdRng) -> Result<()> {
+fn write_manifest(root: &Path, manifest: &GenerationManifest) -> Result<()> {
+    let manifest_path = root.join(MANIFEST_FILE);
+    let json = serde_json::to_string_pretty(manifest)?;
+    fs::write(&manifest_path, json)
+        .with_context(|| format!("writing manifest {}", manifest_path.display()))?;
+    Ok(())
+}
+
+fn load_manifest(root: &Path) -> Result<Option<GenerationManifest>> {
+    let manifest_path = root.join(MANIFEST_FILE);
+    if !manifest_path.exists() {
+        return Ok(None);
+    }
+
+    let data = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("reading manifest {}", manifest_path.display()))?;
+    let manifest = serde_json::from_str(&data)
+        .with_context(|| format!("parsing manifest {}", manifest_path.display()))?;
+    Ok(Some(manifest))
+}
+
+fn create_symlinks(
+    root: &Path,
+    count: usize,
+    targets: &[PathBuf],
+    rng: &mut StdRng,
+    created_dirs: &mut HashSet<PathBuf>,
+) -> Result<()> {
     if targets.is_empty() {
         return Ok(());
     }
-
-    let mut created_dirs: HashSet<PathBuf> = HashSet::new();
-    created_dirs.insert(root.to_path_buf());
     for i in 0..count {
         let target = &targets[rng.gen_range(0..targets.len())];
-        let link_dir = ensure_dir_for_depth(root, rng.gen_range(0..=3), rng, &mut created_dirs)?;
+        let link_dir = ensure_dir_for_depth(root, rng.gen_range(0..=3), rng, created_dirs)?;
         let link_name = format!("symlink-{}", i);
         let link_path = link_dir.join(link_name);
         create_symlink(target, &link_path).with_context(|| {
