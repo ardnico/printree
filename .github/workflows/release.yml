@@ -136,22 +136,6 @@ jobs:
           Move-Item -Path Output\printree_setup.exe -Destination "dist\printree_installer_$env:APP_VERSION.exe"
 
       # ───────────────────────────────
-      # macOS: zip
-      - name: Create zip archive
-        if: matrix.os != 'windows-latest'
-        shell: bash
-        run: |
-          cd package
-          zip -r ../printree-${{ matrix.target }}.zip ./*
-          mv ../printree-${{ matrix.target }}.zip ../dist/
-          cd ..
-          rm -rf package
-
-      - name: Cleanup package directory
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: Remove-Item -Recurse -Force package -ErrorAction SilentlyContinue
-      # ───────────────────────────────
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
